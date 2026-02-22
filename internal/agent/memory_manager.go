@@ -173,6 +173,7 @@ type MemoryOptions struct {
 	BackgroundDigestEnabled bool
 	BackgroundDigestEvery   time.Duration
 	BackgroundDigestMaxRuns int
+	ModelContextWindows     map[string]int
 }
 
 // MemoryManager owns OpenClaw-style file memory behavior.
@@ -316,6 +317,20 @@ func (m *MemoryManager) LongTermPath() string {
 func (m *MemoryManager) ContextWindowTokens() int {
 	if m == nil {
 		return 0
+	}
+	return m.opts.ContextWindowTokens
+}
+
+// ContextWindowForModel returns the context window size for a specific model.
+// Falls back to the default ContextWindowTokens if no per-model override exists.
+func (m *MemoryManager) ContextWindowForModel(model string) int {
+	if m == nil {
+		return 0
+	}
+	if len(m.opts.ModelContextWindows) > 0 && model != "" {
+		if v, ok := m.opts.ModelContextWindows[model]; ok && v > 0 {
+			return v
+		}
 	}
 	return m.opts.ContextWindowTokens
 }

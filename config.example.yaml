@@ -78,10 +78,17 @@ memory:
     trigger_messages: 80
     keep_recent_messages: 30
     summary_max_chars: 3500
-    context_window_tokens: 200000
+    context_window_tokens: 200000  # default fallback for unknown models
     reserve_tokens_floor: 20000
     soft_threshold_tokens: 4000
     pre_flush_memory_write: true
+    # Per-model context window overrides (model name → token count).
+    # If a model isn't listed here, context_window_tokens (200k) is used.
+    # model_context_windows:
+    #   k2p5: 200000
+    #   claude-sonnet-4-6: 200000
+    #   gpt-4.1: 128000
+    #   gemini-2.5-flash: 1048576
   background:
     enabled: true
     interval: 10m

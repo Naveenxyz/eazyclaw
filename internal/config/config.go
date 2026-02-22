@@ -38,14 +38,15 @@ type MemoryConfig struct {
 
 // MemoryCompactionConfig tunes compaction + pre-compaction memory flushing.
 type MemoryCompactionConfig struct {
-	Enabled             *bool `yaml:"enabled"`
-	TriggerMessages     int   `yaml:"trigger_messages"`
-	KeepRecentMessages  int   `yaml:"keep_recent_messages"`
-	SummaryMaxChars     int   `yaml:"summary_max_chars"`
-	ContextWindowTokens int   `yaml:"context_window_tokens"`
-	ReserveTokensFloor  int   `yaml:"reserve_tokens_floor"`
-	SoftThresholdTokens int   `yaml:"soft_threshold_tokens"`
-	PreFlushMemoryWrite *bool `yaml:"pre_flush_memory_write"`
+	Enabled             *bool          `yaml:"enabled"`
+	TriggerMessages     int            `yaml:"trigger_messages"`
+	KeepRecentMessages  int            `yaml:"keep_recent_messages"`
+	SummaryMaxChars     int            `yaml:"summary_max_chars"`
+	ContextWindowTokens int            `yaml:"context_window_tokens"`
+	ReserveTokensFloor  int            `yaml:"reserve_tokens_floor"`
+	SoftThresholdTokens int            `yaml:"soft_threshold_tokens"`
+	PreFlushMemoryWrite *bool          `yaml:"pre_flush_memory_write"`
+	ModelContextWindows map[string]int `yaml:"model_context_windows"`
 }
 
 // MemoryBackgroundConfig controls periodic background memory digests.

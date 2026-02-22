@@ -130,6 +130,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		BackgroundDigestEnabled: memBackgroundEnabled,
 		BackgroundDigestEvery:   cfg.Memory.Background.Interval,
 		BackgroundDigestMaxRuns: cfg.Memory.Background.MaxRuns,
+		ModelContextWindows:     cfg.Memory.Compaction.ModelContextWindows,
 	})
 	if err := memoryManager.EnsureBootstrapFiles(time.Now()); err != nil {
 		slog.Warn("failed to seed memory bootstrap files", "error", err)

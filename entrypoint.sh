@@ -11,6 +11,12 @@ fi
 
 mkdir -p "${DATA_ROOT}"/{workspace,sessions,skills,memory,cron,uv/cache,uv/python,uv/tools,uv/bin,npm/cache,npm/global,auth,auth/gh}
 
+# Ensure Python venv exists on the persistent volume.
+if [ ! -f /data/venv/bin/python ]; then
+  python3 -m venv /data/venv
+  echo "Created Python venv at /data/venv"
+fi
+
 # Copy example config if none exists in the new root.
 if [ ! -f "${DATA_ROOT}/config.yaml" ]; then
   cp /etc/eazyclaw/config.example.yaml "${DATA_ROOT}/config.yaml"

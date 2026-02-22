@@ -109,6 +109,12 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		return
 	}
 
+	// Handle /compact command.
+	if strings.HasPrefix(strings.TrimSpace(msg.Text), "/compact") {
+		a.handleCompactCommand(ctx, session, msg)
+		return
+	}
+
 	// Append user message to session.
 	session.Messages = append(session.Messages, providerPkg.Message{
 		Role:    "user",
@@ -141,9 +147,10 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 	// Get tool definitions.
 	toolDefs := a.tools.ToolDefs()
 
+	// Resolve context window for the active model.
 	contextWindowTokens := 0
 	if a.memory != nil {
-		contextWindowTokens = a.memory.ContextWindowTokens()
+		contextWindowTokens = a.memory.ContextWindowForModel(model)
 	}
 	isHeartbeat := msg.ChannelID == "heartbeat"
 	estimatedTokens := estimateSessionTokens(session.Messages)
@@ -194,6 +201,117 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 	// Trim and save session.
 	a.sessions.Trim(session, 160)
 	a.saveSession(session)
+}
+
+// handleCompactCommand processes the /compact slash command.
+// It force-runs compaction regardless of thresholds and reports token stats.
+func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, msg bus.Message) {
+	sessionID := a.router.SessionID(msg)
+	slog.Info("agent: manual /compact triggered", "session_id", sessionID)
+
+	if a.memory == nil || !a.memory.CompactionEnabled() {
+		a.sendReply(msg, "Compaction is disabled in config.")
+		return
+	}
+
+	if len(session.Messages) < 2 {
+		a.sendReply(msg, "Nothing to compact — session has fewer than 2 messages.")
+		return
+	}
+
+	prov, model, err := a.providers.DefaultProvider()
+	if err != nil {
+		a.sendError(msg, "No LLM provider configured for compaction.")
+		return
+	}
+
+	contextWindowTokens := a.memory.ContextWindowForModel(model)
+	tokensBefore := estimateSessionTokens(session.Messages)
+	msgCountBefore := len(session.Messages)
+
+	// Parse optional custom instructions after "/compact".
+	customInstructions := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(msg.Text), "/compact"))
+
+	// Build system prompt for compaction.
+	isDirect := msg.GroupID == ""
+	systemPrompt := a.context.BuildFor(PromptContext{
+		SessionID:              sessionID,
+		IsDirect:               isDirect,
+		Now:                    msg.Timestamp,
+		Provider:               prov.Name(),
+		Model:                  model,
+		ContextWindowTokens:    contextWindowTokens,
+		EstimatedContextTokens: tokensBefore,
+	})
+
+	// Pre-compaction memory flush.
+	toolDefs := a.tools.ToolDefs()
+	if a.memory.PreCompactionFlushEnabled() {
+		flushPrompt := a.memory.BuildPreCompactionFlushPrompt(msg.Timestamp)
+		flushMessages := CloneMessages(session.Messages)
+		flushMessages = append(flushMessages, providerPkg.Message{
+			Role:    "user",
+			Content: flushPrompt,
+		})
+		flushSystemPrompt := systemPrompt + "\n\nThis is a silent pre-compaction housekeeping turn. Reply with NO_REPLY when done."
+		if _, _, err := a.runToolLoop(ctx, flushMessages, prov, model, flushSystemPrompt, toolDefs, nil, false, 6, contextWindowTokens); err != nil {
+			slog.Warn("agent: manual compact pre-flush failed", "session_id", sessionID, "error", err)
+		} else {
+			count := session.CompactionCount
+			session.MemoryFlushCompactionCount = &count
+		}
+	}
+
+	// Run compaction.
+	keep := a.memory.KeepRecentMessages()
+	if keep >= len(session.Messages) {
+		a.sendReply(msg, fmt.Sprintf("Session only has %d messages (keep_recent=%d) — nothing to compact.", len(session.Messages), keep))
+		a.saveSession(session)
+		return
+	}
+
+	summarized := session.Messages[:len(session.Messages)-keep]
+	recent := session.Messages[len(session.Messages)-keep:]
+
+	compactionPrompt := a.memory.BuildCompactionPrompt()
+	if customInstructions != "" {
+		compactionPrompt += "\n\nAdditional instructions: " + customInstructions
+	}
+
+	summary, err := a.generateCompactionSummary(ctx, prov, model, summarized, systemPrompt+"\n\n"+compactionPrompt)
+	if err != nil {
+		a.sendError(msg, fmt.Sprintf("Compaction failed: %v", err))
+		a.saveSession(session)
+		return
+	}
+
+	compactionMsg := providerPkg.Message{
+		Role:    "assistant",
+		Content: "[COMPACTION SUMMARY]\n" + summary,
+	}
+	next := make([]providerPkg.Message, 0, 1+len(recent))
+	next = append(next, compactionMsg)
+	next = append(next, recent...)
+	session.Messages = next
+	session.CompactionCount++
+
+	if err := a.memory.RecordCompaction(sessionID, len(summarized), summary, msg.Timestamp); err != nil {
+		slog.Warn("agent: failed to write compaction memory note", "session_id", sessionID, "error", err)
+	}
+
+	tokensAfter := estimateSessionTokens(session.Messages)
+	msgCountAfter := len(session.Messages)
+
+	a.saveSession(session)
+
+	reply := fmt.Sprintf(
+		"Compacted.\n\nBefore: %d messages (~%dk tokens)\nAfter: %d messages (~%dk tokens)\nFreed: ~%dk tokens\nContext window: %dk",
+		msgCountBefore, tokensBefore/1000,
+		msgCountAfter, tokensAfter/1000,
+		(tokensBefore-tokensAfter)/1000,
+		contextWindowTokens/1000,
+	)
+	a.sendReply(msg, reply)
 }
 
 func (a *AgentLoop) runToolLoop(

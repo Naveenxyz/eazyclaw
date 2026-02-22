@@ -33,7 +33,7 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="grid grid-cols-[56px_1fr] min-h-screen bg-base relative overflow-hidden">
+    <div className="grid grid-cols-[56px_1fr] h-screen bg-base relative overflow-hidden">
       {/* Pulse bar — ambient top-of-screen accent line */}
       <div className="pulse-bar absolute top-0 left-0 right-0 z-50" />
 

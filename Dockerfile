@@ -34,6 +34,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Create a default virtualenv so uv/pip don't hit the externally-managed error
+RUN python3 -m venv /data/venv
+ENV VIRTUAL_ENV=/data/venv
+ENV PATH="/data/venv/bin:$PATH"
+
 # Configure paths for mounted volume
 ENV DATA_ROOT=/data/eazyclaw
 ENV UV_CACHE_DIR=/data/eazyclaw/uv/cache
