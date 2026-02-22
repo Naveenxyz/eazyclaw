@@ -9,7 +9,7 @@
 *.dll
 *.so
 *.dylib
-eazyclaw
+/eazyclaw
 
 # Go test/build
 *.test

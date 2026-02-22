@@ -53,6 +53,5 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 EXPOSE 8080
-VOLUME /data
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["eazyclaw", "serve"]
