@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
@@ -182,6 +183,17 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Tools.Shell.Timeout == 0 {
 		cfg.Tools.Shell.Timeout = 60 * time.Second
+	}
+	// Railway/cloud platforms set PORT dynamically. Entrypoint maps PORT→WEB_PORT,
+	// but envconfig may not reach nested structs. Check both env vars explicitly.
+	if v := os.Getenv("WEB_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			cfg.Channels.Web.Port = p
+		}
+	} else if v := os.Getenv("PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			cfg.Channels.Web.Port = p
+		}
 	}
 	if cfg.Channels.Web.Port == 0 {
 		cfg.Channels.Web.Port = 8080
