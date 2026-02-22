@@ -153,7 +153,13 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		contextWindowTokens = a.memory.ContextWindowForModel(model)
 	}
 	isHeartbeat := msg.ChannelID == "heartbeat"
-	estimatedTokens := estimateSessionTokens(session.Messages)
+
+	// Use actual provider-reported prompt tokens when available,
+	// fall back to char-based heuristic for fresh sessions.
+	estimatedTokens := session.LastPromptTokens
+	if estimatedTokens == 0 {
+		estimatedTokens = estimateSessionTokens(session.Messages)
+	}
 	remainingBeforeLimit := remainingTokens(contextWindowTokens, estimatedTokens)
 
 	// Build system prompt.
@@ -174,7 +180,10 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		slog.Warn("agent: compaction step failed", "session_id", sessionID, "error", err)
 	}
 
-	estimatedTokens = estimateSessionTokens(session.Messages)
+	estimatedTokens = session.LastPromptTokens
+	if estimatedTokens == 0 {
+		estimatedTokens = estimateSessionTokens(session.Messages)
+	}
 	remainingBeforeLimit = remainingTokens(contextWindowTokens, estimatedTokens)
 	systemPrompt = a.context.BuildFor(PromptContext{
 		SessionID:                sessionID,
@@ -189,7 +198,7 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 	})
 
 	// Main tool loop for the user-visible turn.
-	updated, _, err := a.runToolLoop(ctx, session.Messages, prov, model, systemPrompt, toolDefs, &msg, true, a.maxIterations, contextWindowTokens)
+	updated, lastUsage, err := a.runToolLoop(ctx, session.Messages, prov, model, systemPrompt, toolDefs, &msg, true, a.maxIterations, contextWindowTokens)
 	if err != nil {
 		slog.Error("agent: provider error", "error", err)
 		a.sendError(msg, fmt.Sprintf("LLM error: %v", err))
@@ -197,6 +206,9 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		return
 	}
 	session.Messages = updated
+	if lastUsage.InputTokens > 0 {
+		session.LastPromptTokens = lastUsage.InputTokens
+	}
 
 	// Trim and save session.
 	a.sessions.Trim(session, 160)
@@ -226,7 +238,7 @@ func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, 
 	}
 
 	contextWindowTokens := a.memory.ContextWindowForModel(model)
-	tokensBefore := estimateSessionTokens(session.Messages)
+	promptTokensBefore := session.LastPromptTokens
 	msgCountBefore := len(session.Messages)
 
 	// Parse optional custom instructions after "/compact".
@@ -235,13 +247,12 @@ func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, 
 	// Build system prompt for compaction.
 	isDirect := msg.GroupID == ""
 	systemPrompt := a.context.BuildFor(PromptContext{
-		SessionID:              sessionID,
-		IsDirect:               isDirect,
-		Now:                    msg.Timestamp,
-		Provider:               prov.Name(),
-		Model:                  model,
-		ContextWindowTokens:    contextWindowTokens,
-		EstimatedContextTokens: tokensBefore,
+		SessionID:           sessionID,
+		IsDirect:            isDirect,
+		Now:                 msg.Timestamp,
+		Provider:            prov.Name(),
+		Model:               model,
+		ContextWindowTokens: contextWindowTokens,
 	})
 
 	// Pre-compaction memory flush.
@@ -264,15 +275,14 @@ func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, 
 
 	// Run compaction.
 	keep := a.memory.KeepRecentMessages()
-	splitIdx := findTurnBoundarySplit(session.Messages, keep)
-	if splitIdx <= 0 {
+	if keep >= len(session.Messages) {
 		a.sendReply(msg, fmt.Sprintf("Session only has %d messages (keep_recent=%d) — nothing to compact.", len(session.Messages), keep))
 		a.saveSession(session)
 		return
 	}
 
-	summarized := repairToolPairing(session.Messages[:splitIdx])
-	recent := repairToolPairing(session.Messages[splitIdx:])
+	summarized := session.Messages[:len(session.Messages)-keep]
+	recent := session.Messages[len(session.Messages)-keep:]
 
 	compactionPrompt := a.memory.BuildCompactionPrompt()
 	if customInstructions != "" {
@@ -300,19 +310,25 @@ func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, 
 		slog.Warn("agent: failed to write compaction memory note", "session_id", sessionID, "error", err)
 	}
 
-	tokensAfter := estimateSessionTokens(session.Messages)
 	msgCountAfter := len(session.Messages)
-
 	a.saveSession(session)
 
-	reply := fmt.Sprintf(
-		"Compacted.\n\nBefore: %d messages (~%dk tokens)\nAfter: %d messages (~%dk tokens)\nFreed: ~%dk tokens\nContext window: %dk",
-		msgCountBefore, tokensBefore/1000,
-		msgCountAfter, tokensAfter/1000,
-		(tokensBefore-tokensAfter)/1000,
-		contextWindowTokens/1000,
-	)
-	a.sendReply(msg, reply)
+	// Report using actual provider-reported token counts when available.
+	if promptTokensBefore > 0 {
+		reply := fmt.Sprintf(
+			"Compacted.\n\nBefore: %d messages (%dk prompt tokens)\nAfter: %d messages\nContext window: %dk tokens",
+			msgCountBefore, promptTokensBefore/1000,
+			msgCountAfter,
+			contextWindowTokens/1000,
+		)
+		a.sendReply(msg, reply)
+	} else {
+		reply := fmt.Sprintf(
+			"Compacted.\n\nBefore: %d messages\nAfter: %d messages\nContext window: %dk tokens\n\n(Send a message first to get accurate token counts.)",
+			msgCountBefore, msgCountAfter, contextWindowTokens/1000,
+		)
+		a.sendReply(msg, reply)
+	}
 }
 
 func (a *AgentLoop) runToolLoop(
@@ -326,9 +342,9 @@ func (a *AgentLoop) runToolLoop(
 	sendReply bool,
 	maxIterations int,
 	contextWindowTokens int,
-) ([]providerPkg.Message, string, error) {
+) ([]providerPkg.Message, providerPkg.Usage, error) {
 	history := CloneMessages(messages)
-	finalContent := ""
+	var lastUsage providerPkg.Usage
 
 	if maxIterations <= 0 {
 		maxIterations = 1
@@ -353,12 +369,13 @@ func (a *AgentLoop) runToolLoop(
 
 		resp, err := prov.ChatCompletion(ctx, req)
 		if err != nil {
-			return history, finalContent, err
+			return history, lastUsage, err
 		}
+		lastUsage = resp.Usage
 
 		// If no tool calls, this is the final response.
 		if len(resp.ToolCalls) == 0 {
-			finalContent = strings.TrimSpace(resp.Content)
+			finalContent := strings.TrimSpace(resp.Content)
 			if finalContent != "" {
 				history = append(history, providerPkg.Message{
 					Role:    "assistant",
@@ -368,7 +385,7 @@ func (a *AgentLoop) runToolLoop(
 			if sendReply && origin != nil && finalContent != "" && !strings.EqualFold(finalContent, noReplyToken) {
 				a.sendReply(*origin, resp.Content)
 			}
-			return history, finalContent, nil
+			return history, lastUsage, nil
 		}
 
 		history = append(history, providerPkg.Message{
@@ -404,7 +421,7 @@ func (a *AgentLoop) runToolLoop(
 		slog.Debug("agent: tool loop iteration complete", "iteration", iteration+1)
 	}
 
-	return history, finalContent, nil
+	return history, lastUsage, nil
 }
 
 func (a *AgentLoop) runCompactionIfNeeded(
@@ -422,7 +439,11 @@ func (a *AgentLoop) runCompactionIfNeeded(
 		return nil
 	}
 
-	estimatedTokens := estimateSessionTokens(session.Messages)
+	// Use actual provider-reported tokens when available.
+	estimatedTokens := session.LastPromptTokens
+	if estimatedTokens == 0 {
+		estimatedTokens = estimateSessionTokens(session.Messages)
+	}
 
 	if !isHeartbeat && a.memory.ShouldFlushBeforeCompaction(estimatedTokens, session) {
 		flushPrompt := a.memory.BuildPreCompactionFlushPrompt(now)
@@ -456,12 +477,11 @@ func (a *AgentLoop) runCompactionIfNeeded(
 	}
 
 	keep := a.memory.KeepRecentMessages()
-	splitIdx := findTurnBoundarySplit(session.Messages, keep)
-	if splitIdx <= 0 {
+	if keep >= len(session.Messages) {
 		return nil
 	}
-	summarized := repairToolPairing(session.Messages[:splitIdx])
-	recent := repairToolPairing(session.Messages[splitIdx:])
+	summarized := session.Messages[:len(session.Messages)-keep]
+	recent := session.Messages[len(session.Messages)-keep:]
 
 	summary, err := a.generateCompactionSummary(ctx, prov, model, summarized, systemPrompt)
 	if err != nil {
@@ -554,108 +574,6 @@ func buildRuntimeSnapshotPrompt(
 	return sb.String()
 }
 
-// findTurnBoundarySplit finds a split index that lands on a turn boundary
-// (before a "user" message) so we never cut in the middle of a tool-call
-// sequence. It tries to keep at least `keep` messages in the recent half.
-// Returns 0 if no valid split is found.
-func findTurnBoundarySplit(messages []providerPkg.Message, keep int) int {
-	if keep >= len(messages) {
-		return 0
-	}
-	// Start from the naive split point and scan backward to find a user message.
-	candidate := len(messages) - keep
-	for i := candidate; i > 0; i-- {
-		if messages[i].Role == "user" {
-			return i
-		}
-	}
-	// No user message found scanning backward; try scanning forward.
-	for i := candidate + 1; i < len(messages); i++ {
-		if messages[i].Role == "user" {
-			return i
-		}
-	}
-	return 0
-}
-
-// repairToolPairing ensures tool_use/tool_result consistency in a message
-// slice after splitting. It removes orphaned tool-role messages whose
-// tool_call_id has no matching assistant tool_call, and adds synthetic error
-// results for assistant tool_calls with no matching tool response.
-func repairToolPairing(messages []providerPkg.Message) []providerPkg.Message {
-	// Collect all tool_call IDs from assistant messages.
-	toolCallIDs := make(map[string]bool)
-	for _, m := range messages {
-		if m.Role == "assistant" {
-			for _, tc := range m.ToolCalls {
-				toolCallIDs[tc.ID] = true
-			}
-		}
-	}
-
-	// Collect all tool_call IDs that have a tool response.
-	respondedIDs := make(map[string]bool)
-	for _, m := range messages {
-		if m.Role == "tool" && m.ToolCallID != "" {
-			respondedIDs[m.ToolCallID] = true
-		}
-	}
-
-	// Remove orphaned tool messages (no matching tool_call in this slice).
-	out := make([]providerPkg.Message, 0, len(messages))
-	for _, m := range messages {
-		if m.Role == "tool" && m.ToolCallID != "" && !toolCallIDs[m.ToolCallID] {
-			continue // orphaned tool result
-		}
-		out = append(out, m)
-	}
-
-	// Add synthetic error results for tool_calls missing a response.
-	for _, m := range out {
-		if m.Role != "assistant" {
-			continue
-		}
-		for _, tc := range m.ToolCalls {
-			if !respondedIDs[tc.ID] {
-				out = append(out, providerPkg.Message{
-					Role:       "tool",
-					Content:    "Error: tool result unavailable (lost during compaction)",
-					ToolCallID: tc.ID,
-				})
-			}
-		}
-	}
-
-	// Re-order: synthetic tool results need to be right after their assistant message.
-	// Simple approach: rebuild with correct ordering.
-	result := make([]providerPkg.Message, 0, len(out))
-	syntheticByID := make(map[string]providerPkg.Message)
-	originals := make([]providerPkg.Message, 0, len(out))
-
-	for _, m := range out {
-		if m.Role == "tool" && m.Content == "Error: tool result unavailable (lost during compaction)" {
-			syntheticByID[m.ToolCallID] = m
-		} else {
-			originals = append(originals, m)
-		}
-	}
-
-	if len(syntheticByID) == 0 {
-		return originals
-	}
-
-	for _, m := range originals {
-		result = append(result, m)
-		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
-			for _, tc := range m.ToolCalls {
-				if syn, ok := syntheticByID[tc.ID]; ok {
-					result = append(result, syn)
-				}
-			}
-		}
-	}
-	return result
-}
 
 func (a *AgentLoop) generateCompactionSummary(
 	ctx context.Context,
@@ -668,9 +586,16 @@ func (a *AgentLoop) generateCompactionSummary(
 		return "No prior messages to summarize.", nil
 	}
 
+	// Serialize messages as a plain text timeline (nanobot approach).
+	// This avoids sending raw tool_call/tool_result structures to the LLM,
+	// which prevents API errors from orphaned tool call IDs after splitting.
+	transcript := serializeMessagesAsText(history)
+
 	req := &providerPkg.ChatRequest{
-		Model:        model,
-		Messages:     history,
+		Model: model,
+		Messages: []providerPkg.Message{
+			{Role: "user", Content: transcript},
+		},
 		SystemPrompt: systemPrompt + "\n\n" + a.memory.BuildCompactionPrompt(),
 		MaxTokens:    900,
 	}
@@ -690,6 +615,47 @@ func (a *AgentLoop) generateCompactionSummary(
 		summary = summary[:maxChars]
 	}
 	return summary, nil
+}
+
+// serializeMessagesAsText converts message history into a plain text timeline
+// for compaction summarization. Tool calls are represented as "[tools: name1, name2]"
+// annotations on assistant messages, and tool results are included as indented output.
+// This avoids the tool_use/tool_result pairing problem entirely.
+func serializeMessagesAsText(messages []providerPkg.Message) string {
+	var sb strings.Builder
+	sb.WriteString("## Conversation to Summarize\n\n")
+	for _, m := range messages {
+		switch m.Role {
+		case "user":
+			sb.WriteString("USER: ")
+			sb.WriteString(m.Content)
+			sb.WriteString("\n\n")
+		case "assistant":
+			sb.WriteString("ASSISTANT")
+			if len(m.ToolCalls) > 0 {
+				names := make([]string, len(m.ToolCalls))
+				for i, tc := range m.ToolCalls {
+					names[i] = tc.Name
+				}
+				sb.WriteString(fmt.Sprintf(" [tools: %s]", strings.Join(names, ", ")))
+			}
+			sb.WriteString(": ")
+			if m.Content != "" {
+				sb.WriteString(m.Content)
+			}
+			sb.WriteString("\n\n")
+		case "tool":
+			// Truncate long tool outputs for the summary.
+			content := m.Content
+			if len(content) > 500 {
+				content = content[:500] + "...[truncated]"
+			}
+			sb.WriteString("  TOOL RESULT: ")
+			sb.WriteString(content)
+			sb.WriteString("\n\n")
+		}
+	}
+	return sb.String()
 }
 
 func (a *AgentLoop) runBackgroundDigest(ctx context.Context) {

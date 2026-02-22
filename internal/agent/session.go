@@ -17,6 +17,7 @@ type Session struct {
 	Messages                   []provider.Message `json:"messages"`
 	CompactionCount            int                `json:"compaction_count,omitempty"`
 	MemoryFlushCompactionCount *int               `json:"memory_flush_compaction_count,omitempty"`
+	LastPromptTokens           int                `json:"last_prompt_tokens,omitempty"`
 	Created                    time.Time          `json:"created"`
 	Updated                    time.Time          `json:"updated"`
 }
