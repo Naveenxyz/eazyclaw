@@ -1,0 +1,66 @@
+# EazyClaw Configuration
+# API keys should be set via environment variables, not in this file.
+
+data_dir: /data
+workspace_dir: /data/workspace
+
+providers:
+  default_model: "k2p5"
+  kimi_coding:
+    model: "k2p5"
+    base_url: "https://api.kimi.com/coding/"
+  # Uncomment and configure additional providers as needed:
+  # moonshot:
+  #   model: "kimi-k2.5"
+  #   base_url: "https://api.moonshot.ai/v1"
+  # anthropic:
+  #   model: "claude-sonnet-4-6"
+  # openai:
+  #   model: "gpt-4.1"
+  # gemini:
+  #   model: "gemini-2.5-flash"
+  # zhipu:
+  #   model: "glm-4-plus"
+  #   base_url: "https://open.bigmodel.cn/api/paas/v4"
+
+channels:
+  discord:
+    allowed_users: []  # empty = allow all
+    group_policy: "allowlist"  # "allowlist" or "open"
+    dm:
+      policy: "allow"  # "allow", "deny", or "pairing"
+    guilds:
+      # "123456789012345678":        # Guild/server ID
+      #   require_mention: true
+      #   channels:
+      #     "987654321098765432":     # Channel ID
+      #       allow: true
+      #       require_mention: false  # Override guild-level setting
+
+  telegram:
+    allowed_users: []  # empty = allow all
+    group_policy: "allowlist"  # "allowlist" or "open"
+    dm:
+      policy: "allow"  # "allow" or "deny"
+    allowed_chats:
+      # "-1001234567890":            # Chat ID (negative for groups)
+      #   allow: true
+      #   require_mention: true
+
+  web:
+    enabled: true
+    port: 8080
+    # Password is set via WEB_PASSWORD env var only
+
+tools:
+  shell:
+    deny_patterns:
+      - "rm -rf /"
+      - "sudo"
+      - "chmod 777"
+    timeout: 60s
+    workspace_only: true
+  browser:
+    headless: true
+
+skills_dir: /data/skills

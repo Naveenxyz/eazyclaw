@@ -1,0 +1,25 @@
+services:
+  eazyclaw:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - eazyclaw-data:/data
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - KIMI_API_KEY=${KIMI_API_KEY}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY}
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - WEB_PASSWORD=${WEB_PASSWORD}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "eazyclaw", "health"]
+      interval: 30s
+      timeout: 5s
+
+volumes:
+  eazyclaw-data:

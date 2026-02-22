@@ -1,0 +1,32 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+eazyclaw
+
+# Go test/build
+*.test
+*.out
+vendor/
+
+# Frontend build artifacts
+cmd/eazyclaw/ui-dist/
+ui/dist/
+ui/node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
