@@ -1,6 +1,47 @@
 # EazyClaw
 
-Self-hosted AI agent gateway that connects LLM providers to messaging platforms (Telegram, Discord) with a built-in web dashboard, tool execution, persistent memory, and skill system.
+Self-hosted AI agent gateway that connects LLM providers to messaging platforms (Telegram, Discord, WhatsApp) with a built-in web dashboard, tool execution, persistent memory, and skill system.
+
+## Why I Am Building EazyClaw
+
+I started EazyClaw around one core belief: a personal AI assistant should be easy to own and run.
+
+The goal is simple:
+- clone this repo
+- set a small set of env vars (for example just a `KIMI_API_KEY`)
+- deploy to Railway (or any container host)
+- connect a real chat channel (like WhatsApp)
+- start chatting in minutes
+
+I care less about giant feature surfaces and more about first-run success, fast iteration, and keeping the stack understandable.
+
+## Fundamental Architecture
+
+EazyClaw is built as a small, pragmatic gateway with clean boundaries:
+- Channels (`telegram`, `discord`, `whatsapp`, `web`) convert platform events into a unified inbound message shape.
+- A typed message bus decouples channel adapters from core agent processing.
+- The agent loop handles context build, provider call, tool execution, and response routing.
+- Providers are pluggable (Anthropic/OpenAI/Gemini/Kimi/Moonshot/Zhipu).
+- Tools are registry-based (`shell`, filesystem, web, memory, cron).
+- Memory is file-native (`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, day files).
+- UI is a built-in web dashboard for chat, memory browsing, status, and settings.
+
+## What Is Built And What I’m Working Toward
+
+Built now:
+- Multi-provider model routing
+- Telegram/Discord/Web channels
+- WhatsApp bridge support (QR-based onboarding)
+- Persistent sessions + memory model
+- Cron and heartbeat runners
+- Docker-first deployment path
+
+Working toward:
+- rock-solid one-command deploy templates (especially Railway)
+- even smoother WhatsApp onboarding and health visibility
+- stronger safety defaults and test coverage
+- minimal-ops deployment with clear guardrails
+- a great personal-agent experience without platform lock-in
 
 ## Quick Start
 
@@ -32,6 +73,7 @@ Set any combination of API keys. The first available provider is used by default
 - **Web Dashboard** — Browser-based chat with WebSocket, enabled by default on port 8080
 - **Telegram** — Set `TELEGRAM_BOT_TOKEN` to enable
 - **Discord** — Set `DISCORD_BOT_TOKEN` to enable
+- **WhatsApp** — Set `WHATSAPP_ENABLED=true`, start the bridge, and scan QR once
 
 ### Agent Tools (10 built-in)
 | Tool | Description |
@@ -94,7 +136,7 @@ Drop skill packages into `/data/eazyclaw/skills/` to extend the agent with custo
 ## Architecture
 
 ```
-                    Telegram / Discord / Web Browser
+               Telegram / Discord / WhatsApp / Web Browser
                               |
                     ┌─────────┴─────────┐
                     │     CHANNELS       │
@@ -133,6 +175,9 @@ ZHIPU_API_KEY=...
 # Channels
 TELEGRAM_BOT_TOKEN=...
 DISCORD_BOT_TOKEN=...
+WHATSAPP_ENABLED=true
+WHATSAPP_BRIDGE_URL=ws://whatsapp-bridge:3001
+WHATSAPP_BRIDGE_TOKEN=optional-shared-secret
 
 # Web Dashboard
 WEB_PASSWORD=your-secret    # Optional, no auth if unset
@@ -157,6 +202,11 @@ channels:
   telegram:
     allowed_users: []
     group_policy: "allowlist"
+  whatsapp:
+    enabled: false
+    bridge_url: "ws://whatsapp-bridge:3001"
+    bridge_token: ""
+    allowed_users: []
   web:
     enabled: true
     port: 8080
@@ -186,7 +236,7 @@ The dashboard provides 5 tabs:
 | **Memory** | File tree explorer for `/data/eazyclaw/memory/` — browse, view Markdown, and edit files in-place |
 | **Skills** | Grid view of installed skills with tool and dependency details |
 | **Status** | Live provider and channel status with connection indicators |
-| **Settings** | Configure Discord/Telegram allowlists, guild settings, and DM policies |
+| **Settings** | Configure Discord/Telegram settings and allowlists |
 
 ### Design
 Dark "Neural Command Center" aesthetic with deep space backgrounds, frosted glass cards, violet/cyan accents, and JetBrains Mono typography.
@@ -239,6 +289,20 @@ docker compose build
 docker compose up -d
 ```
 
+### WhatsApp Quick Start
+
+```bash
+# 1) Enable WhatsApp in env
+export WHATSAPP_ENABLED=true
+export WHATSAPP_BRIDGE_TOKEN=your-shared-token  # optional, recommended
+
+# 2) Build + start app and bridge
+docker compose up -d --build
+
+# 3) Scan QR shown by bridge logs (first login only)
+docker compose logs -f whatsapp-bridge
+```
+
 ### Project Structure
 
 ```
@@ -246,15 +310,16 @@ cmd/eazyclaw/          # Main entry point, CLI commands
 internal/
 ├── agent/             # Agent loop, context builder, session store, heartbeat, cron runner
 ├── bus/               # Message bus (inbound/outbound channels)
-├── channel/           # Telegram, Discord, Web (HTTP + WebSocket)
+├── channel/           # Telegram, Discord, WhatsApp, Web (HTTP + WebSocket)
 ├── config/            # YAML + env config loader
 ├── provider/          # LLM provider implementations
 ├── router/            # Access control and session routing
 ├── skill/             # Skill loader and parser
 └── tool/              # Tool registry + implementations
+bridge/whatsapp/       # Bundled Node.js WhatsApp bridge (Baileys + WebSocket)
 ui/                    # React + TypeScript + Tailwind frontend
 ```
 
 ## License
 
-Private.
+MIT. See [LICENSE](LICENSE).
