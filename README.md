@@ -15,6 +15,10 @@ The goal is simple:
 
 I care less about giant feature surfaces and more about first-run success, fast iteration, and keeping the stack understandable.
 
+> [!NOTE]
+> EazyClaw is hugely inspired by projects like OpenClaw, nanobot, and other agent repos in this workspace.
+> This project is my product-first take: fundamentally, I am building the assistant I personally want to use every day.
+
 ## Fundamental Architecture
 
 EazyClaw is built as a small, pragmatic gateway with clean boundaries:
