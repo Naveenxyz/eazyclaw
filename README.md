@@ -79,10 +79,10 @@ Set any combination of API keys. The first available provider is used by default
 - **Discord** — Set `DISCORD_BOT_TOKEN` to enable
 - **WhatsApp** — Set `WHATSAPP_ENABLED=true`, start the bridge, and scan QR once
 
-### Agent Tools (10 built-in)
+### Agent Tools (11 built-in)
 | Tool | Description |
 |---|---|
-| `shell` | Execute bash commands (with deny patterns and timeout) |
+| `shell` | Execute bash commands (with deny patterns and timeout). Runtime includes `git`, `gh`, `rg`, `fd`, `tree`, `wget`, `zip`, `unzip`, `tmux`, `jq`, `node`, `npm`, `python3`, `uv` |
 | `read_file` | Read files from workspace |
 | `write_file` | Create or overwrite files |
 | `edit_file` | String replacement edits |
@@ -186,7 +186,57 @@ WHATSAPP_BRIDGE_TOKEN=optional-shared-secret
 # Web Dashboard
 WEB_PASSWORD=your-secret    # Optional, no auth if unset
 WEB_PORT=8080               # Default: 8080
+
+# GitHub CLI auth (optional)
+GH_TOKEN=ghp_xxx            # Used by `gh auth login --with-token`
 ```
+
+### Getting a Discord Bot Token
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
+2. Click **New Application**, give it a name (e.g. "EazyClaw"), and click **Create**
+3. Go to the **Bot** tab in the left sidebar
+4. Click **Reset Token** (or **Add Bot** if this is a fresh app) and copy the token — this is your `DISCORD_BOT_TOKEN`
+5. Under **Privileged Gateway Intents**, enable **Message Content Intent** (required for reading messages)
+6. Go to the **OAuth2** tab → **URL Generator**
+7. Select scopes: `bot`
+8. Select bot permissions: `Send Messages`, `Read Message History`, `View Channels`
+9. Copy the generated URL and open it in your browser to invite the bot to your server
+
+```bash
+# Add to your .env
+DISCORD_BOT_TOKEN=your-token-here
+```
+
+### Getting a Telegram Bot Token
+
+1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
+2. Send `/newbot`
+3. Choose a display name (e.g. "EazyClaw")
+4. Choose a username — must end in `bot` (e.g. `eazyclaw_bot`)
+5. BotFather replies with your token — this is your `TELEGRAM_BOT_TOKEN`
+6. Optionally send `/setdescription` to set a bio, and `/setuserpic` to set an avatar
+
+```bash
+# Add to your .env
+TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIjKlMnOpQrStUvWxYz
+```
+
+### GitHub CLI Auth
+
+GitHub CLI (`gh`) is preinstalled in the runtime image, and its auth state is persisted in `/data/eazyclaw/auth/gh`.
+
+```bash
+# one-time auth inside the running container
+docker compose exec eazyclaw sh -lc 'echo "$GH_TOKEN" | gh auth login --with-token'
+
+# verify auth
+docker compose exec eazyclaw gh auth status
+```
+
+Notes:
+- Set `GH_TOKEN` in your `.env` before running the login command.
+- `GH_CONFIG_DIR` is set to `/data/eazyclaw/auth/gh` so auth survives container restarts.
 
 ### config.yaml
 
@@ -265,8 +315,11 @@ All persistent data lives in the `/data/eazyclaw` root within the `/data` Docker
     │   └── YYYY-MM-DD.md    # Day-wise memory log
     ├── cron/
     │   └── jobs.json        # Scheduled cron jobs
+    ├── uv/                  # uv cache/tools/python installs
+    ├── npm/                 # npm cache/global installs
     ├── skills/              # Skill packages
-    └── auth/                # OAuth tokens
+    └── auth/
+        └── gh/              # GitHub CLI auth config
 ```
 
 ## Development
@@ -285,8 +338,8 @@ go build -o eazyclaw ./cmd/eazyclaw/
 
 # Frontend
 cd ui
-yarn install
-yarn build
+npm install
+npm run build
 
 # Docker
 docker compose build

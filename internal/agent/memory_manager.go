@@ -313,6 +313,13 @@ func (m *MemoryManager) LongTermPath() string {
 	return m.longTermPath
 }
 
+func (m *MemoryManager) ContextWindowTokens() int {
+	if m == nil {
+		return 0
+	}
+	return m.opts.ContextWindowTokens
+}
+
 func (m *MemoryManager) CompactionEnabled() bool {
 	return m.Enabled() && m.opts.CompactionEnabled
 }

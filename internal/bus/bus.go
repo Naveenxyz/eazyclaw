@@ -5,8 +5,9 @@ import "time"
 // Message represents an inbound message from a channel.
 type Message struct {
 	ID        string
-	ChannelID string // "telegram" | "discord"
+	ChannelID string // "telegram" | "discord" | "web"
 	SenderID  string // platform-specific user ID
+	UserID    string // stable author ID when SenderID carries a chat/channel ID
 	GroupID   string // empty for DMs
 	Text      string
 	Timestamp time.Time

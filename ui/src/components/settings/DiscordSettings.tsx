@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { Plus, X, ChevronDown, ChevronRight, Check, Ban } from "lucide-react";
 import type {
+  DiscordAdminState,
   DiscordChannelConfig,
   DiscordGuildConfig,
   DiscordGuildChannelConfig,
@@ -7,13 +9,25 @@ import type {
 
 interface DiscordSettingsProps {
   config: DiscordChannelConfig;
+  adminState: DiscordAdminState | null;
   onChange: (config: DiscordChannelConfig) => void;
+  onApprove: (userId: string) => void;
+  onReject: (userId: string) => void;
+  pendingActionUserId?: string | null;
 }
 
-export function DiscordSettings({ config, onChange }: DiscordSettingsProps) {
+export function DiscordSettings({
+  config,
+  adminState,
+  onChange,
+  onApprove,
+  onReject,
+  pendingActionUserId,
+}: DiscordSettingsProps) {
   const [newUser, setNewUser] = useState("");
   const [newGuildId, setNewGuildId] = useState("");
   const [newChannelIds, setNewChannelIds] = useState<Record<string, string>>({});
+  const [guildsExpanded, setGuildsExpanded] = useState(true);
 
   const guilds = config.guilds ?? {};
 
@@ -23,26 +37,19 @@ export function DiscordSettings({ config, onChange }: DiscordSettingsProps) {
 
   const addUser = () => {
     const trimmed = newUser.trim();
-    if (!trimmed) return;
-    if (config.allowed_users.includes(trimmed)) return;
+    if (!trimmed || config.allowed_users.includes(trimmed)) return;
     updateConfig({ allowed_users: [...config.allowed_users, trimmed] });
     setNewUser("");
   };
 
   const removeUser = (user: string) => {
-    updateConfig({
-      allowed_users: config.allowed_users.filter((u) => u !== user),
-    });
+    updateConfig({ allowed_users: config.allowed_users.filter((u) => u !== user) });
   };
 
   const addGuild = () => {
     const trimmed = newGuildId.trim();
-    if (!trimmed) return;
-    if (guilds[trimmed]) return;
-    const newGuild: DiscordGuildConfig = {
-      require_mention: false,
-      channels: {},
-    };
+    if (!trimmed || guilds[trimmed]) return;
+    const newGuild: DiscordGuildConfig = { require_mention: false, channels: {} };
     updateConfig({ guilds: { ...guilds, [trimmed]: newGuild } });
     setNewGuildId("");
   };
@@ -57,12 +64,7 @@ export function DiscordSettings({ config, onChange }: DiscordSettingsProps) {
   const updateGuild = (guildId: string, partial: Partial<DiscordGuildConfig>) => {
     const guild = guilds[guildId];
     if (!guild) return;
-    updateConfig({
-      guilds: {
-        ...guilds,
-        [guildId]: { ...guild, ...partial },
-      },
-    });
+    updateConfig({ guilds: { ...guilds, [guildId]: { ...guild, ...partial } } });
   };
 
   const addChannel = (guildId: string) => {
@@ -72,13 +74,8 @@ export function DiscordSettings({ config, onChange }: DiscordSettingsProps) {
     if (!guild) return;
     const channels = guild.channels ?? {};
     if (channels[channelId]) return;
-    const newChannel: DiscordGuildChannelConfig = {
-      allow: true,
-      require_mention: false,
-    };
-    updateGuild(guildId, {
-      channels: { ...channels, [channelId]: newChannel },
-    });
+    const newChannel: DiscordGuildChannelConfig = { allow: true, require_mention: false };
+    updateGuild(guildId, { channels: { ...channels, [channelId]: newChannel } });
     setNewChannelIds((prev) => ({ ...prev, [guildId]: "" }));
   };
 
@@ -99,26 +96,25 @@ export function DiscordSettings({ config, onChange }: DiscordSettingsProps) {
     if (!guild) return;
     const channels = guild.channels ?? {};
     updateGuild(guildId, {
-      channels: {
-        ...channels,
-        [channelId]: { ...channels[channelId], ...partial },
-      },
+      channels: { ...channels, [channelId]: { ...channels[channelId], ...partial } },
     });
   };
 
+  const pendingApprovals = adminState?.pending_approvals ?? [];
+
   return (
-    <div className="glass-card rounded-lg border border-violet-500/10 bg-[#0f1117] p-5">
-      <h2 className="mb-4 text-lg font-semibold text-slate-200">Discord</h2>
+    <div className="card p-5">
+      <h3 className="font-display font-semibold text-fg mb-5">Discord</h3>
 
       {/* Group Policy */}
-      <div className="mb-4">
-        <label className="mb-1 block text-sm font-medium text-slate-400">
-          Group Policy
-        </label>
+      <div className="mb-5">
+        <label className="section-label text-[10px] mb-1.5 block">Group Policy</label>
         <select
           value={config.group_policy}
-          onChange={(e) => updateConfig({ group_policy: e.target.value as DiscordChannelConfig["group_policy"] })}
-          className="w-full rounded-lg border border-violet-500/10 bg-[#0f1117] px-3 py-2 text-sm text-slate-200 focus:border-violet-500/30 focus:ring-1 focus:ring-violet-500/20"
+          onChange={(e) =>
+            updateConfig({ group_policy: e.target.value as DiscordChannelConfig["group_policy"] })
+          }
+          className="w-full bg-raised border border-edge rounded-md px-3 py-2 text-sm font-mono text-fg input-focus"
         >
           <option value="allowlist">allowlist</option>
           <option value="open">open</option>
@@ -126,16 +122,16 @@ export function DiscordSettings({ config, onChange }: DiscordSettingsProps) {
       </div>
 
       {/* DM Policy */}
-      <div className="mb-4">
-        <label className="mb-1 block text-sm font-medium text-slate-400">
-          DM Policy
-        </label>
+      <div className="mb-5">
+        <label className="section-label text-[10px] mb-1.5 block">DM Policy</label>
         <select
           value={config.dm.policy}
           onChange={(e) =>
-            updateConfig({ dm: { ...config.dm, policy: e.target.value as DiscordChannelConfig["dm"]["policy"] } })
+            updateConfig({
+              dm: { ...config.dm, policy: e.target.value as DiscordChannelConfig["dm"]["policy"] },
+            })
           }
-          className="w-full rounded-lg border border-violet-500/10 bg-[#0f1117] px-3 py-2 text-sm text-slate-200 focus:border-violet-500/30 focus:ring-1 focus:ring-violet-500/20"
+          className="w-full bg-raised border border-edge rounded-md px-3 py-2 text-sm font-mono text-fg input-focus"
         >
           <option value="allow">allow</option>
           <option value="deny">deny</option>
@@ -144,172 +140,211 @@ export function DiscordSettings({ config, onChange }: DiscordSettingsProps) {
       </div>
 
       {/* Allowed Users */}
-      <div className="mb-4">
-        <label className="mb-1 block text-sm font-medium text-slate-400">
-          Allowed Users
-        </label>
-        <div className="mb-2 flex flex-wrap gap-2">
-          {config.allowed_users.map((user) => (
-            <span
-              key={user}
-              className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 border border-violet-500/20 px-3 py-1 text-xs text-slate-300"
-            >
-              {user}
-              <button
-                onClick={() => removeUser(user)}
-                className="ml-1 text-slate-500 hover:text-red-400"
+      <div className="mb-5">
+        <label className="section-label text-[10px] mb-1.5 block">Allowed Users</label>
+        {config.allowed_users.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {config.allowed_users.map((user) => (
+              <span
+                key={user}
+                className="inline-flex items-center gap-1.5 badge-accent font-mono text-sm"
               >
-                x
-              </button>
-            </span>
-          ))}
-        </div>
+                {user}
+                <button
+                  onClick={() => removeUser(user)}
+                  className="text-fg-3 hover:text-error transition-colors"
+                  aria-label={`Remove ${user}`}
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="flex gap-2">
           <input
             type="text"
             value={newUser}
             onChange={(e) => setNewUser(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addUser()}
-            placeholder="Add user..."
-            className="flex-1 rounded-lg border border-violet-500/10 bg-[#0f1117] px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:border-violet-500/30 focus:ring-1 focus:ring-violet-500/20"
+            placeholder="User ID..."
+            className="flex-1 bg-raised border border-edge rounded-md px-3 py-2 text-sm font-mono text-fg placeholder-fg-3 input-focus"
           />
-          <button
-            onClick={addUser}
-            className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500"
-          >
+          <button onClick={addUser} className="btn flex items-center gap-1.5">
+            <Plus size={12} />
             Add
           </button>
         </div>
       </div>
 
+      {/* Pending Approvals */}
+      {pendingApprovals.length > 0 && (
+        <div className="mb-5">
+          <label className="section-label text-[10px] mb-2 block">Pending DM Approvals</label>
+          <div className="flex flex-col gap-2">
+            {pendingApprovals.map((item) => (
+              <div
+                key={item.user_id}
+                className="rounded-md border border-edge bg-raised p-3"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-mono text-fg">{item.user_id}</div>
+                    <div className="truncate text-xs text-fg-3 mt-0.5">
+                      {item.username || "unknown"} &middot; {item.message_count} message
+                      {item.message_count !== 1 ? "s" : ""}
+                    </div>
+                  </div>
+                  <div className="flex gap-1.5 shrink-0">
+                    <button
+                      onClick={() => onApprove(item.user_id)}
+                      disabled={pendingActionUserId === item.user_id}
+                      className="btn-accent !px-2.5 !py-1 !text-xs flex items-center gap-1"
+                    >
+                      <Check size={11} />
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => onReject(item.user_id)}
+                      disabled={pendingActionUserId === item.user_id}
+                      className="btn-danger !px-2.5 !py-1 !text-xs flex items-center gap-1"
+                    >
+                      <Ban size={11} />
+                      Reject
+                    </button>
+                  </div>
+                </div>
+                {item.preview && (
+                  <p className="mt-2 text-xs text-fg-2 line-clamp-2">{item.preview}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Guilds */}
       <div>
-        <label className="mb-2 block text-sm font-medium text-slate-400">
-          Guilds
-        </label>
+        <button
+          onClick={() => setGuildsExpanded((prev) => !prev)}
+          className="flex items-center gap-1.5 mb-3 group"
+        >
+          {guildsExpanded ? (
+            <ChevronDown size={12} className="text-fg-3" />
+          ) : (
+            <ChevronRight size={12} className="text-fg-3" />
+          )}
+          <span className="section-label text-[10px]">Guilds</span>
+          <span className="badge-neutral ml-1">{Object.keys(guilds).length}</span>
+        </button>
 
-        {Object.entries(guilds).map(([guildId, guild]) => (
-          <div
-            key={guildId}
-            className="mb-4 rounded-lg border border-violet-500/10 bg-[#151720] p-4"
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <span className="text-sm font-mono font-medium text-slate-200">
-                Guild: {guildId}
-              </span>
-              <button
-                onClick={() => removeGuild(guildId)}
-                className="text-xs text-red-400 hover:text-red-300"
-              >
-                Remove
-              </button>
-            </div>
-
-            {/* Require Mention Toggle */}
-            <label className="mb-3 flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={guild.require_mention}
-                onChange={(e) =>
-                  updateGuild(guildId, { require_mention: e.target.checked })
-                }
-                className="rounded border-violet-500/20"
-              />
-              <span className="text-sm text-slate-300">Require Mention</span>
-            </label>
-
-            {/* Channels */}
-            <div className="ml-2">
-              <label className="mb-2 block text-xs font-medium text-slate-500">
-                Channels
-              </label>
-
-              {Object.entries(guild.channels ?? {}).map(([channelId, channel]) => (
-                <div
-                  key={channelId}
-                  className="mb-2 flex items-center gap-3 rounded-lg border border-white/5 bg-[#0f1117] px-3 py-2"
-                >
-                  <span className="flex-1 text-xs font-mono text-slate-300">
-                    {channelId}
+        {guildsExpanded && (
+          <>
+            {Object.entries(guilds).map(([guildId, guild]) => (
+              <div key={guildId} className="mb-4 rounded-md border border-edge bg-raised p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-sm font-mono font-medium text-fg">
+                    Guild: {guildId}
                   </span>
-                  <label className="flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      checked={channel.allow ?? true}
-                      onChange={(e) =>
-                        updateChannel(guildId, channelId, {
-                          allow: e.target.checked,
-                        })
-                      }
-                      className="rounded border-violet-500/20"
-                    />
-                    <span className="text-xs text-slate-400">Allow</span>
-                  </label>
-                  <label className="flex items-center gap-1">
-                    <input
-                      type="checkbox"
-                      checked={channel.require_mention ?? false}
-                      onChange={(e) =>
-                        updateChannel(guildId, channelId, {
-                          require_mention: e.target.checked,
-                        })
-                      }
-                      className="rounded border-violet-500/20"
-                    />
-                    <span className="text-xs text-slate-400">
-                      Require Mention
-                    </span>
-                  </label>
                   <button
-                    onClick={() => removeChannel(guildId, channelId)}
-                    className="text-xs text-red-400 hover:text-red-300"
+                    onClick={() => removeGuild(guildId)}
+                    className="text-xs text-error hover:opacity-80 transition-opacity flex items-center gap-1"
                   >
+                    <X size={11} />
                     Remove
                   </button>
                 </div>
-              ))}
 
-              <div className="mt-2 flex gap-2">
-                <input
-                  type="text"
-                  value={newChannelIds[guildId] || ""}
-                  onChange={(e) =>
-                    setNewChannelIds((prev) => ({
-                      ...prev,
-                      [guildId]: e.target.value,
-                    }))
-                  }
-                  onKeyDown={(e) => e.key === "Enter" && addChannel(guildId)}
-                  placeholder="Channel ID..."
-                  className="flex-1 rounded-lg border border-violet-500/10 bg-[#0f1117] px-3 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:border-violet-500/30 focus:ring-1 focus:ring-violet-500/20"
-                />
-                <button
-                  onClick={() => addChannel(guildId)}
-                  className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
-                >
-                  Add
-                </button>
+                {/* Require Mention Toggle */}
+                <label className="mb-3 flex items-center gap-2 cursor-pointer">
+                  <div
+                    className={`toggle ${guild.require_mention ? "active" : ""}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      updateGuild(guildId, { require_mention: !guild.require_mention });
+                    }}
+                  />
+                  <span className="text-sm text-fg-2">Require Mention</span>
+                </label>
+
+                {/* Channels */}
+                <div className="ml-2">
+                  <label className="section-label text-[10px] mb-2 block">Channels</label>
+
+                  {Object.entries(guild.channels ?? {}).map(([channelId, channel]) => (
+                    <div
+                      key={channelId}
+                      className="mb-2 flex items-center gap-3 rounded-md border border-edge bg-surface px-3 py-2"
+                    >
+                      <span className="flex-1 text-xs font-mono text-fg-2">{channelId}</span>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <div
+                          className={`toggle ${channel.allow !== false ? "active" : ""}`}
+                          onClick={() =>
+                            updateChannel(guildId, channelId, { allow: !(channel.allow ?? true) })
+                          }
+                        />
+                        <span className="text-xs text-fg-3">Allow</span>
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <div
+                          className={`toggle ${channel.require_mention ? "active" : ""}`}
+                          onClick={() =>
+                            updateChannel(guildId, channelId, {
+                              require_mention: !channel.require_mention,
+                            })
+                          }
+                        />
+                        <span className="text-xs text-fg-3">Mention</span>
+                      </label>
+                      <button
+                        onClick={() => removeChannel(guildId, channelId)}
+                        className="text-fg-3 hover:text-error transition-colors"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      type="text"
+                      value={newChannelIds[guildId] || ""}
+                      onChange={(e) =>
+                        setNewChannelIds((prev) => ({ ...prev, [guildId]: e.target.value }))
+                      }
+                      onKeyDown={(e) => e.key === "Enter" && addChannel(guildId)}
+                      placeholder="Channel ID..."
+                      className="flex-1 bg-raised border border-edge rounded-md px-3 py-1.5 text-xs font-mono text-fg placeholder-fg-3 input-focus"
+                    />
+                    <button
+                      onClick={() => addChannel(guildId)}
+                      className="btn !text-xs !px-3 !py-1.5 flex items-center gap-1"
+                    >
+                      <Plus size={11} />
+                      Add
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-        ))}
+            ))}
 
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={newGuildId}
-            onChange={(e) => setNewGuildId(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addGuild()}
-            placeholder="Guild ID..."
-            className="flex-1 rounded-lg border border-violet-500/10 bg-[#0f1117] px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:border-violet-500/30 focus:ring-1 focus:ring-violet-500/20"
-          />
-          <button
-            onClick={addGuild}
-            className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500"
-          >
-            Add Guild
-          </button>
-        </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newGuildId}
+                onChange={(e) => setNewGuildId(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addGuild()}
+                placeholder="Guild ID..."
+                className="flex-1 bg-raised border border-edge rounded-md px-3 py-2 text-sm font-mono text-fg placeholder-fg-3 input-focus"
+              />
+              <button onClick={addGuild} className="btn flex items-center gap-1.5">
+                <Plus size={12} />
+                Add Guild
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

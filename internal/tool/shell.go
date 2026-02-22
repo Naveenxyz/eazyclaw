@@ -44,7 +44,9 @@ func NewShellTool(cfg config.ShellConfig, workspaceDir string) *ShellTool {
 
 func (t *ShellTool) Name() string { return "shell" }
 
-func (t *ShellTool) Description() string { return "Execute shell commands in the workspace" }
+func (t *ShellTool) Description() string {
+	return "Execute shell commands in the workspace. Preinstalled CLI tools include bash, git, gh, node, npm, python3, uv, rg, fd, tree, wget, zip, unzip, tmux, and jq."
+}
 
 func (t *ShellTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -108,21 +110,42 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (*Result,
 	return &Result{Content: result}, nil
 }
 
-// filterEnv removes environment variables that may contain API keys or secrets.
+// filterEnv removes environment variables that are dangerous for shell/runtime integrity.
 func filterEnv(environ []string) []string {
-	sensitiveKeys := []string{
-		"API_KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL",
-		"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "AWS_SECRET",
+	// Keep auth tokens available to runtime tools (for example gh with GH_TOKEN),
+	// but strip env vars that can hijack runtime loading or shell behavior.
+	blockedExactKeys := map[string]struct{}{
+		"NODE_OPTIONS":  {},
+		"NODE_PATH":     {},
+		"PYTHONHOME":    {},
+		"PYTHONPATH":    {},
+		"PERL5LIB":      {},
+		"PERL5OPT":      {},
+		"RUBYLIB":       {},
+		"RUBYOPT":       {},
+		"BASH_ENV":      {},
+		"ENV":           {},
+		"SHELL":         {},
+		"GCONV_PATH":    {},
+		"IFS":           {},
+		"SSLKEYLOGFILE": {},
 	}
+	blockedPrefixes := []string{"DYLD_", "LD_", "BASH_FUNC_"}
+
 	filtered := make([]string, 0, len(environ))
 	for _, env := range environ {
 		key := strings.SplitN(env, "=", 2)[0]
 		upper := strings.ToUpper(key)
 		skip := false
-		for _, sensitive := range sensitiveKeys {
-			if strings.Contains(upper, sensitive) {
-				skip = true
-				break
+		if _, blocked := blockedExactKeys[upper]; blocked {
+			skip = true
+		}
+		if !skip {
+			for _, prefix := range blockedPrefixes {
+				if strings.HasPrefix(upper, prefix) {
+					skip = true
+					break
+				}
 			}
 		}
 		if !skip {

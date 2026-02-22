@@ -16,21 +16,50 @@ interface ChatTabProps {
 
 export function ChatTab({ ws }: ChatTabProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string>("");
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isTyping, setIsTyping] = useState(false);
 
+  // Load sessions on mount and auto-refresh every 4s
   useEffect(() => {
-    getSessions().then(setSessions).catch(() => {});
+    let mounted = true;
+
+    const load = () => {
+      getSessions()
+        .then((list) => {
+          if (!mounted) return;
+          setSessions(list);
+        })
+        .catch(() => {});
+    };
+
+    load();
+    const timer = setInterval(load, 4000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
   }, []);
 
+  // Auto-select first session when none is selected
+  useEffect(() => {
+    if (selectedSessionId) return;
+    const first = sessions[0];
+    if (!first) return;
+    setSelectedSessionId(first.id);
+  }, [sessions, selectedSessionId]);
+
+  // Fetch messages when selected session changes
   useEffect(() => {
     if (!selectedSessionId) return;
-    getSession(selectedSessionId).then((session) => {
-      setMessages(session.messages);
-    }).catch(() => {});
+    getSession(selectedSessionId)
+      .then((session) => {
+        setMessages(session.messages);
+      })
+      .catch(() => {});
   }, [selectedSessionId]);
 
+  // Handle incoming WebSocket messages
   useEffect(() => {
     if (!ws.lastMessage) return;
 
@@ -41,11 +70,14 @@ export function ChatTab({ ws }: ChatTabProps) {
       };
       setMessages((prev) => [...prev, newMsg]);
       setIsTyping(false);
-      // Fetch full session to get tool_calls
+
+      // Re-fetch full session to capture tool_calls
       if (selectedSessionId) {
-        getSession(selectedSessionId).then((session) => {
-          setMessages(session.messages);
-        }).catch(() => {});
+        getSession(selectedSessionId)
+          .then((session) => {
+            setMessages(session.messages);
+          })
+          .catch(() => {});
       }
     } else if (ws.lastMessage.type === "typing") {
       setIsTyping(true);
@@ -68,20 +100,21 @@ export function ChatTab({ ws }: ChatTabProps) {
       ws.send(text);
       setIsTyping(true);
     },
-    [ws]
+    [ws],
   );
 
   return (
-    <div className="flex h-full flex-row bg-[#08090d]">
+    <div className="flex h-full flex-row bg-base">
       <SessionList
         sessions={sessions}
         selectedId={selectedSessionId}
         onSelect={handleSelect}
       />
-      <div className="flex flex-1 flex-col">
+
+      <div className="flex flex-1 flex-col min-w-0">
         <MessageList messages={messages} />
-        <TypingIndicator visible={isTyping} />
-        <ChatInput onSend={handleSend} disabled={isTyping} />
+        <TypingIndicator isTyping={isTyping} />
+        <ChatInput onSend={handleSend} disabled={!ws.connected || isTyping} />
       </div>
     </div>
   );

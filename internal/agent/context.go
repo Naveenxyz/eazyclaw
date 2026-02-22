@@ -27,10 +27,15 @@ type ContextBuilder struct {
 
 // PromptContext carries per-turn details used when building the system prompt.
 type PromptContext struct {
-	SessionID   string
-	IsDirect    bool
-	IsHeartbeat bool
-	Now         time.Time
+	SessionID                string
+	IsDirect                 bool
+	IsHeartbeat              bool
+	Now                      time.Time
+	Provider                 string
+	Model                    string
+	ContextWindowTokens      int
+	EstimatedContextTokens   int
+	EstimatedRemainingTokens int
 }
 
 // NewContextBuilder creates a new ContextBuilder.
@@ -312,6 +317,22 @@ func (cb *ContextBuilder) buildRuntimeInfo(sb *strings.Builder, ctx PromptContex
 	if ctx.IsHeartbeat {
 		sb.WriteString("- Turn type: heartbeat\n")
 	}
+	if ctx.Provider != "" {
+		sb.WriteString(fmt.Sprintf("- Provider: %s\n", ctx.Provider))
+	}
+	if ctx.Model != "" {
+		sb.WriteString(fmt.Sprintf("- Model: %s\n", ctx.Model))
+	}
+	if ctx.ContextWindowTokens > 0 {
+		sb.WriteString(fmt.Sprintf("- Context window (configured): %d tokens\n", ctx.ContextWindowTokens))
+	}
+	if ctx.EstimatedContextTokens > 0 {
+		sb.WriteString(fmt.Sprintf("- Estimated context length now: %d tokens\n", ctx.EstimatedContextTokens))
+	}
+	if ctx.EstimatedRemainingTokens > 0 {
+		sb.WriteString(fmt.Sprintf("- Estimated remaining before limit: %d tokens\n", ctx.EstimatedRemainingTokens))
+	}
+	sb.WriteString("- Token counts are approximate planning hints, not exact tokenizer output\n")
 
 	if len(cb.tools) > 0 {
 		sb.WriteString(fmt.Sprintf("- Available tools: %d\n", len(cb.tools)))

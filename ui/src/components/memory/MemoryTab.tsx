@@ -1,15 +1,15 @@
-import { useState, useEffect } from 'react';
-import { FilePlus } from 'lucide-react';
-import FileTree from './FileTree';
-import FileViewer from './FileViewer';
-import { getMemoryTree, getMemoryFile, putMemoryFile } from '../../lib/api';
-import type { MemoryNode } from '../../types';
+import { useState, useEffect } from "react";
+import { FilePlus } from "lucide-react";
+import FileTree from "@/components/memory/FileTree";
+import FileViewer from "@/components/memory/FileViewer";
+import { getMemoryTree, getMemoryFile, putMemoryFile } from "@/lib/api";
+import type { MemoryNode } from "@/types";
 
 export default function MemoryTab() {
   const [tree, setTree] = useState<MemoryNode | null>(null);
-  const [selectedFile, setSelectedFile] = useState('');
-  const [fileContent, setFileContent] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [fileContent, setFileContent] = useState("");
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     getMemoryTree()
@@ -19,18 +19,19 @@ export default function MemoryTab() {
 
   const handleSelect = async (path: string) => {
     setSelectedFile(path);
-    setIsLoading(true);
+    setLoading(true);
     try {
       const data = await getMemoryFile(path);
       setFileContent(data.content);
     } catch {
-      setFileContent('');
+      setFileContent("");
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   };
 
   const handleSave = async (content: string) => {
+    if (!selectedFile) return;
     try {
       await putMemoryFile(selectedFile, content);
       setFileContent(content);
@@ -40,28 +41,28 @@ export default function MemoryTab() {
   };
 
   const handleNewFile = async () => {
-    const name = window.prompt('File name (e.g. notes.md):');
+    const name = window.prompt("File name (e.g. notes.md):");
     if (!name) return;
-    const path = name.startsWith('/') ? name.slice(1) : name;
+    const path = name.startsWith("/") ? name.slice(1) : name;
     try {
-      await putMemoryFile(path, '');
+      await putMemoryFile(path, "");
       const refreshed = await getMemoryTree();
       setTree(refreshed);
       setSelectedFile(path);
-      setFileContent('');
+      setFileContent("");
     } catch {
-      // create failed
+      // create failed silently
     }
   };
 
   return (
-    <div className="flex h-full flex-col bg-[#08090d]">
-      {/* Top toolbar */}
-      <div className="flex items-center justify-between border-b border-white/5 px-4 py-2">
-        <span className="text-sm font-medium text-zinc-300">Memory Explorer</span>
+    <div className="flex h-full flex-col bg-base">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between border-b border-edge px-4 py-3">
+        <span className="section-label">Memory Explorer</span>
         <button
           onClick={handleNewFile}
-          className="flex items-center gap-1 rounded-md bg-violet-500/15 px-2.5 py-1 text-xs text-violet-400 transition-colors hover:bg-violet-500/25"
+          className="btn flex items-center gap-1.5"
         >
           <FilePlus size={13} />
           New File
@@ -70,24 +71,27 @@ export default function MemoryTab() {
 
       {/* Split pane */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left panel: file tree */}
-        <div className="w-60 shrink-0 overflow-y-auto border-r border-white/5 bg-[#0b0c12]">
+        {/* File tree sidebar */}
+        <div className="w-56 shrink-0 overflow-y-auto border-r border-edge bg-surface">
           {tree ? (
             <FileTree tree={tree} selectedPath={selectedFile} onSelect={handleSelect} />
           ) : (
-            <div className="flex items-center justify-center h-32 text-xs text-zinc-500">
-              Loading...
+            <div className="flex items-center justify-center h-32">
+              <div className="flex items-center gap-2">
+                <div className="h-3 w-3 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+                <span className="text-xs font-mono text-fg-3">Loading...</span>
+              </div>
             </div>
           )}
         </div>
 
-        {/* Right panel: file viewer */}
+        {/* File viewer */}
         <div className="flex-1 overflow-hidden">
           <FileViewer
             path={selectedFile}
             content={fileContent}
+            loading={loading}
             onSave={handleSave}
-            isLoading={isLoading}
           />
         </div>
       </div>

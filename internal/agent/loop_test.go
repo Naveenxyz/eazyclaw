@@ -23,6 +23,7 @@ type mockProvider struct {
 	flushCalls   int
 	summaryCalls int
 	mainCalls    int
+	lastPrompt   string
 }
 
 func (m *mockProvider) Name() string { return m.name }
@@ -30,6 +31,7 @@ func (m *mockProvider) Name() string { return m.name }
 func (m *mockProvider) ChatCompletion(ctx context.Context, req *providerPkg.ChatRequest) (*providerPkg.ChatResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastPrompt = req.SystemPrompt
 
 	lastUser := ""
 	for i := len(req.Messages) - 1; i >= 0; i-- {
@@ -217,5 +219,72 @@ func TestAgentLoopNoReplySuppressed(t *testing.T) {
 	}
 	if strings.Contains(string(dayData), "housekeeping turn") {
 		t.Fatalf("expected no per-turn transcript dump in daily memory")
+	}
+}
+
+func TestAgentLoopInjectsRuntimeSnapshotInPrompt(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	now := time.Date(2026, 2, 22, 18, 0, 0, 0, time.UTC)
+	memDir := filepath.Join(base, "memory")
+	sessionsDir := filepath.Join(base, "sessions")
+
+	mm := NewMemoryManager(base, memDir, MemoryOptions{
+		Enabled:             true,
+		CompactionEnabled:   false,
+		ContextWindowTokens: 1000,
+	})
+	if err := mm.EnsureBootstrapFiles(now); err != nil {
+		t.Fatalf("EnsureBootstrapFiles failed: %v", err)
+	}
+
+	msgBus := bus.New(4)
+	reg := providerPkg.NewRegistry("mock-model")
+	mock := &mockProvider{name: "mock", finalText: "runtime ok"}
+	reg.Register(mock, "mock-model")
+
+	toolReg := tool.NewRegistry()
+	ctxBuilder := NewContextBuilder(mm.LongTermPath())
+	ctxBuilder.SetMemoryManager(mm)
+	ctxBuilder.SetTools(toolReg.List())
+	ctxBuilder.SetToolDescriptions(toolReg.Descriptions())
+
+	store := NewSessionStore(sessionsDir)
+	r := router.NewRouter(config.ChannelsConfig{})
+	loop := NewAgentLoop(msgBus, reg, toolReg, store, ctxBuilder, mm, r)
+
+	loop.handleMessage(context.Background(), bus.Message{
+		ID:        "m-3",
+		ChannelID: "discord",
+		SenderID:  "user-3",
+		Text:      "who are you and which model are you",
+		Timestamp: now,
+	})
+
+	select {
+	case <-msgBus.Outbound:
+	case <-time.After(800 * time.Millisecond):
+		t.Fatalf("expected outbound response")
+	}
+
+	mock.mu.Lock()
+	prompt := mock.lastPrompt
+	mock.mu.Unlock()
+
+	if !strings.Contains(prompt, "## Runtime Snapshot (live)") {
+		t.Fatalf("expected runtime snapshot block in prompt")
+	}
+	if !strings.Contains(prompt, "- Provider: mock") {
+		t.Fatalf("expected provider line in prompt")
+	}
+	if !strings.Contains(prompt, "- Model: mock-model") {
+		t.Fatalf("expected model line in prompt")
+	}
+	if !strings.Contains(prompt, "- Context window (configured): 1000 tokens") {
+		t.Fatalf("expected context window line in prompt")
+	}
+	if !strings.Contains(prompt, "- Estimated input tokens this call:") {
+		t.Fatalf("expected estimated input token line in prompt")
 	}
 }

@@ -1,15 +1,16 @@
+import { MessageSquare } from "lucide-react";
 import type { SessionSummary } from "@/types";
 
 interface SessionListProps {
   sessions: SessionSummary[];
-  selectedId: string;
+  selectedId: string | null;
   onSelect: (id: string) => void;
 }
 
-function formatRelativeTime(dateString: string): string {
-  const now = new Date();
-  const date = new Date(dateString);
-  const diffMs = now.getTime() - date.getTime();
+function formatRelativeTime(dateStr: string): string {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diffMs = now - then;
   const diffSec = Math.floor(diffMs / 1000);
   const diffMin = Math.floor(diffSec / 60);
   const diffHr = Math.floor(diffMin / 60);
@@ -21,41 +22,51 @@ function formatRelativeTime(dateString: string): string {
   return `${diffDay}d ago`;
 }
 
-function truncateId(id: string, maxLen = 12): string {
-  return id.length > maxLen ? id.slice(0, maxLen) + "..." : id;
-}
-
 export function SessionList({ sessions, selectedId, onSelect }: SessionListProps) {
   return (
-    <div className="flex w-[260px] flex-col border-r border-violet-500/10 bg-[#0f1117]">
-      <div className="border-b border-violet-500/10 px-4 py-3">
-        <h2 className="text-sm font-mono font-semibold uppercase tracking-wider text-slate-400">
-          Sessions
-        </h2>
+    <div className="flex w-60 flex-col border-r border-edge bg-surface h-full">
+      {/* Header */}
+      <div className="border-b border-edge px-4 py-3">
+        <h2 className="section-label">Sessions</h2>
       </div>
+
+      {/* Session list */}
       <div className="flex-1 overflow-y-auto">
-        {sessions.map((session) => {
-          const isActive = session.id === selectedId;
-          return (
-            <button
-              key={session.id}
-              onClick={() => onSelect(session.id)}
-              className={`w-full px-4 py-3 text-left transition-colors ${
-                isActive
-                  ? "border-l-2 border-violet-500 bg-violet-500/10 text-slate-200"
-                  : "border-l-2 border-transparent text-slate-300 hover:bg-white/5"
-              }`}
-            >
-              <div className="truncate text-sm font-medium font-mono">
-                {truncateId(session.id)}
-              </div>
-              <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
-                <span>{session.message_count} messages</span>
-                <span>{formatRelativeTime(session.updated)}</span>
-              </div>
-            </button>
-          );
-        })}
+        {sessions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 px-4">
+            <MessageSquare size={28} className="text-fg-3 opacity-40" />
+            <p className="mt-3 text-xs text-fg-3 font-display font-bold">
+              No sessions yet
+            </p>
+          </div>
+        ) : (
+          sessions.map((session) => {
+            const isActive = session.id === selectedId;
+            return (
+              <button
+                key={session.id}
+                onClick={() => onSelect(session.id)}
+                className={`w-full px-4 py-3 text-left transition-colors duration-150 cursor-pointer ${
+                  isActive
+                    ? "border-l-2 border-accent bg-accent-dim text-fg"
+                    : "border-l-2 border-transparent text-fg-2 hover:bg-raised"
+                }`}
+              >
+                <div className="truncate text-sm font-mono text-fg">
+                  {session.id.slice(0, 10)}
+                </div>
+                <div className="mt-1.5 flex items-center justify-between">
+                  <span className="badge-neutral badge text-[10px]">
+                    {session.message_count} msgs
+                  </span>
+                  <span className="text-xs text-fg-3">
+                    {formatRelativeTime(session.updated)}
+                  </span>
+                </div>
+              </button>
+            );
+          })
+        )}
       </div>
     </div>
   );

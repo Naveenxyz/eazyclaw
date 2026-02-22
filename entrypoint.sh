@@ -4,7 +4,12 @@ set -euo pipefail
 DATA_ROOT="${DATA_ROOT:-/data/eazyclaw}"
 MEMORY_DIR="${DATA_ROOT}/memory"
 
-mkdir -p "${DATA_ROOT}"/{workspace,sessions,skills,memory,cron,uv/cache,npm/cache,npm/global,auth}
+# Railway sets PORT dynamically; map it to WEB_PORT so eazyclaw picks it up.
+if [ -n "${PORT:-}" ] && [ -z "${WEB_PORT:-}" ]; then
+  export WEB_PORT="$PORT"
+fi
+
+mkdir -p "${DATA_ROOT}"/{workspace,sessions,skills,memory,cron,uv/cache,uv/python,uv/tools,uv/bin,npm/cache,npm/global,auth,auth/gh}
 
 # Copy example config if none exists in the new root.
 if [ ! -f "${DATA_ROOT}/config.yaml" ]; then
@@ -41,6 +46,18 @@ fi
 if [ ! -f "${MEMORY_DIR}/MEMORY.md" ]; then
   cp /defaults/MEMORY.md "${MEMORY_DIR}/MEMORY.md"
   echo "Created default MEMORY.md at ${MEMORY_DIR}/MEMORY.md"
+fi
+
+# Seed default skills if the skills directory is empty.
+SKILLS_DIR="${DATA_ROOT}/skills"
+if [ -d /defaults/skills ]; then
+  for skill_dir in /defaults/skills/*/; do
+    skill_name="$(basename "$skill_dir")"
+    if [ ! -d "${SKILLS_DIR}/${skill_name}" ]; then
+      cp -r "$skill_dir" "${SKILLS_DIR}/${skill_name}"
+      echo "Installed default skill: ${skill_name}"
+    fi
+  done
 fi
 
 # Seed today's day-wise memory file if missing.

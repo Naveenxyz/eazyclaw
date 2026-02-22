@@ -52,5 +52,9 @@ func (r *Router) IsAllowed(msg bus.Message) bool {
 		// No allowlist for this channel means all users are allowed.
 		return true
 	}
-	return userSet[msg.SenderID]
+	userID := msg.UserID
+	if userID == "" {
+		userID = msg.SenderID
+	}
+	return userSet[userID]
 }

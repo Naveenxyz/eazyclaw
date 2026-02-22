@@ -20,6 +20,9 @@ vendor/
 cmd/eazyclaw/ui-dist/
 ui/dist/
 ui/node_modules/
+ui/yarn.lock
+ui/tsconfig.app.tsbuildinfo
+ui/tsconfig.node.tsbuildinfo
 
 # OS files
 .DS_Store

@@ -1,7 +1,7 @@
 export interface ToolCall {
   id: string;
   name: string;
-  arguments: string;
+  arguments: string | Record<string, unknown>;
 }
 
 export interface Message {
@@ -69,6 +69,38 @@ export interface DiscordChannelConfig {
   guilds?: Record<string, DiscordGuildConfig>;
 }
 
+export interface DiscordPendingApproval {
+  user_id: string;
+  username: string;
+  preview: string;
+  message_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface DiscordAdminState {
+  group_policy: "allowlist" | "open";
+  dm_policy: "allow" | "deny" | "pairing";
+  allowed_users: string[];
+  pending_approvals: DiscordPendingApproval[];
+}
+
+export interface TelegramPendingApproval {
+  user_id: string;
+  username: string;
+  preview: string;
+  message_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface TelegramAdminState {
+  group_policy: "allowlist" | "open";
+  dm_policy: "allow" | "deny";
+  allowed_users: string[];
+  pending_approvals: TelegramPendingApproval[];
+}
+
 export interface TelegramChatConfig {
   allow: boolean;
   require_mention: boolean;
@@ -106,4 +138,24 @@ export interface MemoryNode {
   path: string;
   type: 'file' | 'dir';
   children?: MemoryNode[];
+}
+
+// --- Cron ---
+
+export interface CronJob {
+  id: string;
+  schedule: string;
+  task: string;
+  enabled: boolean;
+  last_run: string;
+  next_run: string;
+}
+
+// --- Heartbeat ---
+
+export interface HeartbeatStatus {
+  enabled: boolean;
+  interval: string;
+  last_run: string;
+  running: boolean;
 }

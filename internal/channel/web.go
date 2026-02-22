@@ -24,6 +24,7 @@ import (
 	"github.com/eazyclaw/eazyclaw/internal/config"
 	providerPkg "github.com/eazyclaw/eazyclaw/internal/provider"
 	"github.com/eazyclaw/eazyclaw/internal/skill"
+	"github.com/eazyclaw/eazyclaw/internal/tool"
 )
 
 var upgrader = websocket.Upgrader{
@@ -32,6 +33,17 @@ var upgrader = websocket.Upgrader{
 
 const sessionCookieName = "eazyclaw_session"
 const sessionExpiry = 24 * time.Hour
+
+// Login rate limiting.
+const (
+	loginMaxAttempts = 5
+	loginLockoutDur  = 2 * time.Minute
+)
+
+type loginAttempt struct {
+	count    int
+	lockedAt time.Time
+}
 
 // WebChannel provides a browser-based chat interface and dashboard.
 type WebChannel struct {
@@ -49,6 +61,9 @@ type WebChannel struct {
 	// Auth session store: token -> expiry time.
 	authSessions sync.Map
 
+	// Login rate limiter: IP -> loginAttempt.
+	loginAttempts sync.Map
+
 	// Data for API endpoints.
 	skills     []skill.Skill
 	channelCfg *config.ChannelsConfig
@@ -59,6 +74,14 @@ type WebChannel struct {
 
 	// Memory explorer directory.
 	memoryDir string
+
+	discord  *DiscordChannel
+	telegram *TelegramChannel
+
+	// Monitoring: cron and heartbeat.
+	cronManager     tool.CronManager
+	heartbeatRunner *agent.HeartbeatRunner
+	heartbeatCfg    *config.HeartbeatConfig
 }
 
 // NewWebChannel creates a new WebChannel.
@@ -102,6 +125,32 @@ func (w *WebChannel) SetMemoryDir(dir string) {
 	w.memoryDir = dir
 }
 
+
+// SetDiscordChannel sets a live Discord channel reference for admin APIs.
+func (w *WebChannel) SetDiscordChannel(ch *DiscordChannel) {
+	w.discord = ch
+}
+
+// SetTelegramChannel sets a live Telegram channel reference for admin APIs.
+func (w *WebChannel) SetTelegramChannel(ch *TelegramChannel) {
+	w.telegram = ch
+}
+
+// SetCronManager sets the cron manager for the cron API.
+func (w *WebChannel) SetCronManager(cm tool.CronManager) {
+	w.cronManager = cm
+}
+
+// SetHeartbeatRunner sets the heartbeat runner for monitoring.
+func (w *WebChannel) SetHeartbeatRunner(hb *agent.HeartbeatRunner) {
+	w.heartbeatRunner = hb
+}
+
+// SetHeartbeatConfig sets the heartbeat config for status display.
+func (w *WebChannel) SetHeartbeatConfig(cfg *config.HeartbeatConfig) {
+	w.heartbeatCfg = cfg
+}
+
 // Name returns the channel identifier.
 func (w *WebChannel) Name() string { return "web" }
 
@@ -121,8 +170,15 @@ func (w *WebChannel) Start(ctx context.Context, b *bus.Bus) error {
 	mux.Handle("/api/sessions/", w.authMiddleware(http.HandlerFunc(w.handleSessionDetail)))
 	mux.Handle("/api/skills", w.authMiddleware(http.HandlerFunc(w.handleSkills)))
 	mux.Handle("/api/config", w.authMiddleware(http.HandlerFunc(w.handleConfig)))
+	mux.Handle("/api/discord", w.authMiddleware(http.HandlerFunc(w.handleDiscordAdmin)))
+	mux.Handle("/api/discord/approvals", w.authMiddleware(http.HandlerFunc(w.handleDiscordApprovals)))
+	mux.Handle("/api/telegram", w.authMiddleware(http.HandlerFunc(w.handleTelegramAdmin)))
+	mux.Handle("/api/telegram/approvals", w.authMiddleware(http.HandlerFunc(w.handleTelegramApprovals)))
 	mux.Handle("/api/memory/", w.authMiddleware(http.HandlerFunc(w.handleMemoryPath)))
 	mux.Handle("/api/memory", w.authMiddleware(http.HandlerFunc(w.handleMemoryList)))
+	mux.Handle("/api/cron/", w.authMiddleware(http.HandlerFunc(w.handleCronJob)))
+	mux.Handle("/api/cron", w.authMiddleware(http.HandlerFunc(w.handleCron)))
+	mux.Handle("/api/heartbeat", w.authMiddleware(http.HandlerFunc(w.handleHeartbeat)))
 
 	// SPA handler: serve frontend assets or fall back to index.html.
 	mux.HandleFunc("/", w.handleSPA)
@@ -224,11 +280,55 @@ func (w *WebChannel) handleSPA(rw http.ResponseWriter, r *http.Request) {
 	rw.Write(indexData)
 }
 
+// clientIP extracts the client IP for rate limiting.
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		if i := strings.IndexByte(fwd, ','); i > 0 {
+			return strings.TrimSpace(fwd[:i])
+		}
+		return strings.TrimSpace(fwd)
+	}
+	if host, _, ok := strings.Cut(r.RemoteAddr, ":"); ok {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// isSecureRequest returns true if the request arrived over HTTPS
+// (direct TLS or via a reverse proxy like Railway/nginx).
+func isSecureRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 // handleAPILogin validates the password and sets a session cookie.
 func (w *WebChannel) handleAPILogin(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	// Rate limiting by client IP.
+	ip := clientIP(r)
+	if val, ok := w.loginAttempts.Load(ip); ok {
+		attempt := val.(*loginAttempt)
+		if !attempt.lockedAt.IsZero() && time.Since(attempt.lockedAt) < loginLockoutDur {
+			remaining := loginLockoutDur - time.Since(attempt.lockedAt)
+			rw.Header().Set("Content-Type", "application/json")
+			rw.Header().Set("Retry-After", fmt.Sprintf("%d", int(remaining.Seconds())))
+			rw.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(rw).Encode(map[string]string{
+				"error": fmt.Sprintf("Too many attempts. Try again in %d seconds.", int(remaining.Seconds())),
+			})
+			return
+		}
+		// Reset if lockout has expired.
+		if !attempt.lockedAt.IsZero() && time.Since(attempt.lockedAt) >= loginLockoutDur {
+			attempt.count = 0
+			attempt.lockedAt = time.Time{}
+		}
 	}
 
 	var body struct {
@@ -240,11 +340,23 @@ func (w *WebChannel) handleAPILogin(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	if body.Password != w.password {
+		// Track failed attempt.
+		val, _ := w.loginAttempts.LoadOrStore(ip, &loginAttempt{})
+		attempt := val.(*loginAttempt)
+		attempt.count++
+		if attempt.count >= loginMaxAttempts {
+			attempt.lockedAt = time.Now()
+			slog.Warn("login rate limit triggered", "ip", ip)
+		}
+
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(rw).Encode(map[string]string{"error": "invalid password"})
 		return
 	}
+
+	// Successful login — clear any tracked attempts.
+	w.loginAttempts.Delete(ip)
 
 	// Generate session token.
 	tokenBytes := make([]byte, 32)
@@ -262,6 +374,7 @@ func (w *WebChannel) handleAPILogin(rw http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   int(sessionExpiry.Seconds()),
 		HttpOnly: true,
+		Secure:   isSecureRequest(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -368,6 +481,7 @@ func (w *WebChannel) handleWS(rw http.ResponseWriter, r *http.Request) {
 			ID:        fmt.Sprintf("web-%d", time.Now().UnixNano()),
 			ChannelID: "web",
 			SenderID:  senderID,
+			UserID:    senderID,
 			Text:      text,
 			Timestamp: time.Now(),
 		}
@@ -437,8 +551,8 @@ func (w *WebChannel) handleSkills(rw http.ResponseWriter, r *http.Request) {
 		Package string `json:"package"`
 	}
 	type skillResp struct {
-		Name         string         `json:"name"`
-		Description  string         `json:"description"`
+		Name         string          `json:"name"`
+		Description  string          `json:"description"`
 		Tools        []skillToolResp `json:"tools"`
 		Dependencies []skillDepResp  `json:"dependencies"`
 	}
@@ -504,15 +618,21 @@ func (w *WebChannel) handleConfigGet(rw http.ResponseWriter, r *http.Request) {
 		Discord  config.DiscordChannelConfig  `json:"discord"`
 		Telegram config.TelegramChannelConfig `json:"telegram"`
 		Web      struct {
-			Enabled       bool `json:"enabled"`
-			Port          int  `json:"port"`
-			HasPassword   bool `json:"has_password"`
+			Enabled     bool `json:"enabled"`
+			Port        int  `json:"port"`
+			HasPassword bool `json:"has_password"`
 		} `json:"web"`
 	}
 
 	resp := sanitizedConfig{
 		Discord:  w.channelCfg.Discord,
 		Telegram: w.channelCfg.Telegram,
+	}
+	if resp.Discord.AllowedUsers == nil {
+		resp.Discord.AllowedUsers = []string{}
+	}
+	if resp.Telegram.AllowedUsers == nil {
+		resp.Telegram.AllowedUsers = []string{}
 	}
 	resp.Web.Enabled = w.channelCfg.Web.Enabled
 	resp.Web.Port = w.channelCfg.Web.Port
@@ -560,12 +680,17 @@ func (w *WebChannel) handleConfigPut(rw http.ResponseWriter, r *http.Request) {
 	if incoming.Discord != nil {
 		channels["discord"] = incoming.Discord
 		w.channelCfg.Discord = *incoming.Discord
+		if w.discord != nil {
+			w.discord.ApplyConfig(*incoming.Discord)
+		}
 	}
 	if incoming.Telegram != nil {
 		channels["telegram"] = incoming.Telegram
 		w.channelCfg.Telegram = *incoming.Telegram
+		if w.telegram != nil {
+			w.telegram.ApplyConfig(*incoming.Telegram)
+		}
 	}
-
 	fullCfg["channels"] = channels
 
 	// Write back.
@@ -584,6 +709,286 @@ func (w *WebChannel) handleConfigPut(rw http.ResponseWriter, r *http.Request) {
 		"status":  "ok",
 		"message": "Config saved. Restart container to apply changes.",
 	})
+}
+
+func (w *WebChannel) handleDiscordAdmin(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	state := channelDiscordSnapshot(w.channelCfg, w.discord)
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(state)
+}
+
+func (w *WebChannel) handleDiscordApprovals(rw http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		state := channelDiscordSnapshot(w.channelCfg, w.discord)
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(state)
+		return
+	case http.MethodPost:
+	default:
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Action string `json:"action"`
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(rw, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	userID := strings.TrimSpace(req.UserID)
+	if userID == "" {
+		http.Error(rw, "user_id required", http.StatusBadRequest)
+		return
+	}
+
+	switch strings.ToLower(strings.TrimSpace(req.Action)) {
+	case "approve":
+		if w.discord != nil {
+			w.discord.ApproveUser(userID)
+		}
+		if err := w.persistDiscordAllowedUser(userID); err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	case "reject":
+		if w.discord != nil {
+			w.discord.RejectUser(userID)
+		}
+	default:
+		http.Error(rw, "action must be approve or reject", http.StatusBadRequest)
+		return
+	}
+
+	state := channelDiscordSnapshot(w.channelCfg, w.discord)
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(state)
+}
+
+func channelDiscordSnapshot(cfg *config.ChannelsConfig, ch *DiscordChannel) DiscordAdminState {
+	if ch != nil {
+		state := ch.Snapshot()
+		if state.AllowedUsers == nil {
+			state.AllowedUsers = []string{}
+		}
+		if state.Pending == nil {
+			state.Pending = []DiscordPendingApproval{}
+		}
+		return state
+	}
+
+	state := DiscordAdminState{
+		AllowedUsers: []string{},
+		Pending:      []DiscordPendingApproval{},
+	}
+	if cfg != nil {
+		state.GroupPolicy = cfg.Discord.GroupPolicy
+		state.DMPolicy = cfg.Discord.DM.Policy
+		if len(cfg.Discord.AllowedUsers) > 0 {
+			state.AllowedUsers = append([]string{}, cfg.Discord.AllowedUsers...)
+		}
+	}
+	return state
+}
+
+func (w *WebChannel) persistDiscordAllowedUser(userID string) error {
+	if w.channelCfg == nil {
+		return fmt.Errorf("channel config unavailable")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return fmt.Errorf("invalid user id")
+	}
+
+	exists := false
+	for _, u := range w.channelCfg.Discord.AllowedUsers {
+		if strings.TrimSpace(u) == userID {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		w.channelCfg.Discord.AllowedUsers = append(w.channelCfg.Discord.AllowedUsers, userID)
+	}
+
+	if w.configPath == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(w.configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config: %w", err)
+	}
+
+	var fullCfg map[string]any
+	if err := yaml.Unmarshal(data, &fullCfg); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	channels, _ := fullCfg["channels"].(map[string]any)
+	if channels == nil {
+		channels = make(map[string]any)
+	}
+	channels["discord"] = w.channelCfg.Discord
+	fullCfg["channels"] = channels
+
+	out, err := yaml.Marshal(fullCfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	if err := os.WriteFile(w.configPath, out, 0o644); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	return nil
+}
+
+// --- Telegram Admin API ---
+
+func (w *WebChannel) handleTelegramAdmin(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	state := channelTelegramSnapshot(w.channelCfg, w.telegram)
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(state)
+}
+
+func (w *WebChannel) handleTelegramApprovals(rw http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		state := channelTelegramSnapshot(w.channelCfg, w.telegram)
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(state)
+		return
+	case http.MethodPost:
+	default:
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Action string `json:"action"`
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(rw, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	userID := strings.TrimSpace(req.UserID)
+	if userID == "" {
+		http.Error(rw, "user_id required", http.StatusBadRequest)
+		return
+	}
+
+	switch strings.ToLower(strings.TrimSpace(req.Action)) {
+	case "approve":
+		if w.telegram != nil {
+			w.telegram.ApproveUser(userID)
+		}
+		if err := w.persistTelegramAllowedUser(userID); err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	case "reject":
+		if w.telegram != nil {
+			w.telegram.RejectUser(userID)
+		}
+	default:
+		http.Error(rw, "action must be approve or reject", http.StatusBadRequest)
+		return
+	}
+
+	state := channelTelegramSnapshot(w.channelCfg, w.telegram)
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(state)
+}
+
+func channelTelegramSnapshot(cfg *config.ChannelsConfig, ch *TelegramChannel) TelegramAdminState {
+	if ch != nil {
+		state := ch.Snapshot()
+		if state.AllowedUsers == nil {
+			state.AllowedUsers = []string{}
+		}
+		if state.Pending == nil {
+			state.Pending = []TelegramPendingApproval{}
+		}
+		return state
+	}
+
+	state := TelegramAdminState{
+		AllowedUsers: []string{},
+		Pending:      []TelegramPendingApproval{},
+	}
+	if cfg != nil {
+		state.GroupPolicy = cfg.Telegram.GroupPolicy
+		state.DMPolicy = cfg.Telegram.DM.Policy
+		if len(cfg.Telegram.AllowedUsers) > 0 {
+			state.AllowedUsers = append([]string{}, cfg.Telegram.AllowedUsers...)
+		}
+	}
+	return state
+}
+
+func (w *WebChannel) persistTelegramAllowedUser(userID string) error {
+	if w.channelCfg == nil {
+		return fmt.Errorf("channel config unavailable")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return fmt.Errorf("invalid user id")
+	}
+
+	exists := false
+	for _, u := range w.channelCfg.Telegram.AllowedUsers {
+		if strings.TrimSpace(u) == userID {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		w.channelCfg.Telegram.AllowedUsers = append(w.channelCfg.Telegram.AllowedUsers, userID)
+	}
+
+	if w.configPath == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(w.configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config: %w", err)
+	}
+
+	var fullCfg map[string]any
+	if err := yaml.Unmarshal(data, &fullCfg); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	channels, _ := fullCfg["channels"].(map[string]any)
+	if channels == nil {
+		channels = make(map[string]any)
+	}
+	channels["telegram"] = w.channelCfg.Telegram
+	fullCfg["channels"] = channels
+
+	out, err := yaml.Marshal(fullCfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	if err := os.WriteFile(w.configPath, out, 0o644); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	return nil
 }
 
 // --- Memory Explorer API ---
@@ -717,6 +1122,147 @@ func (w *WebChannel) handleMemoryPath(rw http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// --- Cron API ---
+
+func (w *WebChannel) handleCron(rw http.ResponseWriter, r *http.Request) {
+	if w.cronManager == nil {
+		http.Error(rw, "cron not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		jobs := w.cronManager.ListJobs()
+		if jobs == nil {
+			jobs = []tool.CronJob{}
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(jobs)
+
+	case http.MethodPost:
+		var req struct {
+			Schedule string `json:"schedule"`
+			Task     string `json:"task"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(rw, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.Schedule == "" || req.Task == "" {
+			http.Error(rw, "schedule and task are required", http.StatusBadRequest)
+			return
+		}
+		id, err := w.cronManager.AddJob(req.Schedule, req.Task)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(map[string]string{"id": id, "status": "created"})
+
+	default:
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (w *WebChannel) handleCronJob(rw http.ResponseWriter, r *http.Request) {
+	if w.cronManager == nil {
+		http.Error(rw, "cron not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Extract job ID from path: /api/cron/{id} or /api/cron/{id}/toggle
+	path := strings.TrimPrefix(r.URL.Path, "/api/cron/")
+	parts := strings.SplitN(path, "/", 2)
+	jobID := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	if jobID == "" {
+		http.Error(rw, "job ID required", http.StatusBadRequest)
+		return
+	}
+
+	switch {
+	case action == "toggle" && r.Method == http.MethodPost:
+		// Find current state and toggle
+		jobs := w.cronManager.ListJobs()
+		for _, j := range jobs {
+			if j.ID == jobID {
+				err := w.cronManager.UpdateJob(jobID, "", "", !j.Enabled)
+				if err != nil {
+					http.Error(rw, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				rw.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(rw).Encode(map[string]any{"id": jobID, "enabled": !j.Enabled})
+				return
+			}
+		}
+		http.Error(rw, "job not found", http.StatusNotFound)
+
+	case r.Method == http.MethodPut:
+		var req struct {
+			Schedule string `json:"schedule"`
+			Task     string `json:"task"`
+			Enabled  *bool  `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(rw, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		enabled := true
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		if err := w.cronManager.UpdateJob(jobID, req.Schedule, req.Task, enabled); err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(map[string]string{"id": jobID, "status": "updated"})
+
+	case r.Method == http.MethodDelete:
+		if err := w.cronManager.RemoveJob(jobID); err != nil {
+			http.Error(rw, err.Error(), http.StatusNotFound)
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(map[string]string{"id": jobID, "status": "deleted"})
+
+	default:
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// --- Heartbeat API ---
+
+func (w *WebChannel) handleHeartbeat(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if w.heartbeatRunner != nil {
+		status := w.heartbeatRunner.Status()
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(status)
+		return
+	}
+
+	// Heartbeat not running - return disabled status
+	resp := agent.HeartbeatStatus{
+		Enabled: false,
+	}
+	if w.heartbeatCfg != nil {
+		resp.Interval = w.heartbeatCfg.Interval.String()
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(resp)
 }
 
 // Ensure WebChannel satisfies the Channel interface at compile time.

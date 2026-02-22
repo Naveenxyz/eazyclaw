@@ -60,14 +60,22 @@ func ParseSkillMD(content string) (*Skill, error) {
 }
 
 // parseSections splits lines into sections keyed by ## heading names.
+// It skips ## headings inside fenced code blocks (``` delimiters).
 func parseSections(lines []string) map[string]string {
 	sections := make(map[string]string)
 	var currentSection string
 	var currentContent []string
+	inCodeBlock := false
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## ") {
+
+		// Track fenced code block boundaries.
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+		}
+
+		if !inCodeBlock && strings.HasPrefix(trimmed, "## ") {
 			// Save previous section.
 			if currentSection != "" {
 				sections[currentSection] = strings.Join(currentContent, "\n")

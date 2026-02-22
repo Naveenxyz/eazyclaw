@@ -5,14 +5,14 @@ interface StatusCardProps {
 
 export function StatusCard({ name, detail }: StatusCardProps) {
   return (
-    <div className="glass-card flex items-center gap-3 rounded-lg border border-violet-500/10 bg-[#0f1117] p-4">
-      <span className="status-dot connected h-2.5 w-2.5 flex-shrink-0 rounded-full bg-emerald-500 shadow-[0_0_6px_1px] shadow-emerald-500/50" />
+    <div className="card card-accent flex items-center gap-3 p-4 border-l-2 border-accent">
+      <div className="status-indicator online" />
       <div className="min-w-0">
-        <div className="truncate text-sm font-mono font-medium text-slate-200">
+        <div className="truncate text-sm font-mono font-medium text-fg">
           {name}
         </div>
         {detail && (
-          <div className="truncate text-xs text-slate-400">{detail}</div>
+          <div className="truncate text-xs text-fg-3">{detail}</div>
         )}
       </div>
     </div>

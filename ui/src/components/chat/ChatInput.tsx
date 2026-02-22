@@ -1,4 +1,5 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { Send } from "lucide-react";
 
 interface ChatInputProps {
   onSend: (text: string) => void;
@@ -7,6 +8,17 @@ interface ChatInputProps {
 
 export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
   const [value, setValue] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-grow textarea between 1 and 4 rows
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const lineHeight = 20; // ~text-sm line height
+    const maxHeight = lineHeight * 4;
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+  }, [value]);
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
@@ -16,33 +28,34 @@ export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
   }, [value, onSend]);
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSend();
       }
     },
-    [handleSend]
+    [handleSend],
   );
 
   return (
-    <div className="p-4">
-      <div className="glass-card mx-auto flex max-w-3xl items-center gap-2 rounded-lg border border-violet-500/10 bg-[#0f1117]/80 px-4 py-3 backdrop-blur-sm">
-        <input
-          type="text"
+    <div className="sticky bottom-0 border-t border-edge bg-base p-4">
+      <div className="card input-focus mx-auto flex max-w-3xl items-end gap-2 px-4 py-3">
+        <textarea
+          ref={textareaRef}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
           disabled={disabled}
           placeholder="Type a message..."
-          className="flex-1 bg-transparent px-2 py-1 text-sm text-slate-200 placeholder-slate-500 outline-none focus:ring-1 focus:ring-violet-500/50 rounded disabled:opacity-50"
+          rows={1}
+          className="flex-1 resize-none bg-transparent text-sm text-fg font-body placeholder:text-fg-3 outline-none disabled:opacity-40"
         />
         <button
           onClick={handleSend}
           disabled={disabled || !value.trim()}
-          className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:hover:bg-violet-600"
+          className="flex-shrink-0 rounded-md bg-accent px-3 py-1.5 text-base transition-opacity hover:opacity-90 disabled:opacity-30 cursor-pointer"
         >
-          Send
+          <Send size={16} />
         </button>
       </div>
     </div>

@@ -91,3 +91,39 @@ func TestContextBuilderBuildForRespectsTurnTypeAndSessionType(t *testing.T) {
 		t.Fatalf("group prompt should not include long-term memory")
 	}
 }
+
+func TestContextBuilderRuntimeInfoIncludesModelAndContextEstimates(t *testing.T) {
+	t.Parallel()
+
+	cb := NewContextBuilder("")
+	cb.SetTools([]string{"memory_read", "memory_write"})
+	cb.SetSkills([]string{"skill-a"})
+
+	now := time.Date(2026, 2, 22, 20, 0, 0, 0, time.UTC)
+	prompt := cb.BuildFor(PromptContext{
+		SessionID:                "discord:dm",
+		IsDirect:                 true,
+		Now:                      now,
+		Provider:                 "anthropic",
+		Model:                    "claude-sonnet-4-6",
+		ContextWindowTokens:      200000,
+		EstimatedContextTokens:   4200,
+		EstimatedRemainingTokens: 195800,
+	})
+
+	if !strings.Contains(prompt, "- Provider: anthropic") {
+		t.Fatalf("expected provider runtime info")
+	}
+	if !strings.Contains(prompt, "- Model: claude-sonnet-4-6") {
+		t.Fatalf("expected model runtime info")
+	}
+	if !strings.Contains(prompt, "- Context window (configured): 200000 tokens") {
+		t.Fatalf("expected context window runtime info")
+	}
+	if !strings.Contains(prompt, "- Estimated context length now: 4200 tokens") {
+		t.Fatalf("expected estimated context token runtime info")
+	}
+	if !strings.Contains(prompt, "- Estimated remaining before limit: 195800 tokens") {
+		t.Fatalf("expected remaining token runtime info")
+	}
+}

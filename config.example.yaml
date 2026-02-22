@@ -25,7 +25,7 @@ providers:
 
 channels:
   discord:
-    allowed_users: []  # empty = allow all
+    allowed_users: []  # in allowlist mode, DMs require explicit users; guilds also need guild/channel allowlist.
     group_policy: "allowlist"  # "allowlist" or "open"
     dm:
       policy: "allow"  # "allow", "deny", or "pairing"

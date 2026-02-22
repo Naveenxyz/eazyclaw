@@ -1,15 +1,15 @@
-import { useState, useEffect } from 'react';
-import { Pencil, Eye, Save } from 'lucide-react';
-import { MarkdownContent } from '../chat/MarkdownContent';
+import { useState, useEffect } from "react";
+import { Pencil, Eye, Save, File } from "lucide-react";
+import { MarkdownContent } from "@/components/chat/MarkdownContent";
 
 interface FileViewerProps {
-  path: string;
+  path: string | null;
   content: string;
+  loading: boolean;
   onSave: (content: string) => void;
-  isLoading: boolean;
 }
 
-export default function FileViewer({ path, content, onSave, isLoading }: FileViewerProps) {
+export default function FileViewer({ path, content, loading, onSave }: FileViewerProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(content);
 
@@ -20,17 +20,18 @@ export default function FileViewer({ path, content, onSave, isLoading }: FileVie
 
   if (!path) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-zinc-500">
-        Select a file to view
+      <div className="flex flex-col h-full items-center justify-center gap-2">
+        <File size={36} className="text-fg-3 opacity-30" />
+        <span className="text-fg-3 text-xs font-mono mt-2">Select a file to view</span>
       </div>
     );
   }
 
-  if (isLoading) {
+  if (loading) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-zinc-400">
-        <div className="flex items-center gap-2">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" />
+      <div className="flex h-full items-center justify-center">
+        <div className="flex items-center gap-2 text-fg-3 text-sm">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-accent border-t-transparent" />
           Loading...
         </div>
       </div>
@@ -43,15 +44,15 @@ export default function FileViewer({ path, content, onSave, isLoading }: FileVie
   };
 
   return (
-    <div className="glass-card flex h-full flex-col overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Toolbar */}
-      <div className="flex items-center justify-between border-b border-white/5 px-4 py-2">
-        <span className="text-xs font-mono text-zinc-400 truncate">{path}</span>
-        <div className="flex items-center gap-1">
+      <div className="flex items-center justify-between border-b border-edge px-4 py-2">
+        <span className="font-mono text-xs text-fg-2 truncate">{path}</span>
+        <div className="flex items-center gap-1.5 shrink-0">
           {isEditing && (
             <button
               onClick={handleSave}
-              className="flex items-center gap-1 rounded-md bg-violet-500/20 px-2 py-1 text-xs text-violet-400 transition-colors hover:bg-violet-500/30"
+              className="btn-accent !px-2.5 !py-1 !text-xs flex items-center gap-1"
             >
               <Save size={12} />
               Save
@@ -59,10 +60,10 @@ export default function FileViewer({ path, content, onSave, isLoading }: FileVie
           )}
           <button
             onClick={() => setIsEditing((prev) => !prev)}
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-300"
+            className="btn !px-2 !py-1 !text-xs flex items-center gap-1"
           >
             {isEditing ? <Eye size={12} /> : <Pencil size={12} />}
-            {isEditing ? 'View' : 'Edit'}
+            {isEditing ? "View" : "Edit"}
           </button>
         </div>
       </div>
@@ -73,10 +74,10 @@ export default function FileViewer({ path, content, onSave, isLoading }: FileVie
           <textarea
             value={editContent}
             onChange={(e) => setEditContent(e.target.value)}
-            className="h-full w-full resize-none bg-[#0f1117] font-mono text-sm text-zinc-300 outline-none rounded-md p-3 border border-white/5"
+            className="h-full w-full resize-none bg-base border border-edge rounded-md font-mono text-sm text-fg p-3 input-focus"
           />
         ) : (
-          <div className="prose-sm text-zinc-300">
+          <div className="text-sm text-fg">
             <MarkdownContent content={content} />
           </div>
         )}

@@ -74,9 +74,9 @@ type ProviderEntry struct {
 
 // ChannelsConfig holds messaging channel settings.
 type ChannelsConfig struct {
-	Telegram TelegramChannelConfig `yaml:"telegram"`
-	Discord  DiscordChannelConfig  `yaml:"discord"`
-	Web      WebChannelEntry       `yaml:"web"`
+	Telegram TelegramChannelConfig `yaml:"telegram" json:"telegram"`
+	Discord  DiscordChannelConfig  `yaml:"discord" json:"discord"`
+	Web      WebChannelEntry       `yaml:"web" json:"web"`
 }
 
 // DiscordGuildChannelConfig holds per-channel config within a guild.
@@ -197,6 +197,12 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Channels.Telegram.DM.Policy == "" {
 		cfg.Channels.Telegram.DM.Policy = "allow"
+	}
+	if cfg.Channels.Discord.AllowedUsers == nil {
+		cfg.Channels.Discord.AllowedUsers = []string{}
+	}
+	if cfg.Channels.Telegram.AllowedUsers == nil {
+		cfg.Channels.Telegram.AllowedUsers = []string{}
 	}
 	if cfg.Heartbeat.Interval == 0 {
 		cfg.Heartbeat.Interval = 5 * time.Minute

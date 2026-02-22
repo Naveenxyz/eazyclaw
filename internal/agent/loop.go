@@ -130,18 +130,6 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		}
 	}
 
-	// Build system prompt.
-	isHeartbeat := msg.ChannelID == "heartbeat"
-	systemPrompt := a.context.BuildFor(PromptContext{
-		SessionID:   sessionID,
-		IsDirect:    isDirect,
-		IsHeartbeat: isHeartbeat,
-		Now:         msg.Timestamp,
-	})
-
-	// Get tool definitions.
-	toolDefs := a.tools.ToolDefs()
-
 	// Get the default provider.
 	prov, model, err := a.providers.DefaultProvider()
 	if err != nil {
@@ -150,13 +138,51 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		return
 	}
 
+	// Get tool definitions.
+	toolDefs := a.tools.ToolDefs()
+
+	contextWindowTokens := 0
+	if a.memory != nil {
+		contextWindowTokens = a.memory.ContextWindowTokens()
+	}
+	isHeartbeat := msg.ChannelID == "heartbeat"
+	estimatedTokens := estimateSessionTokens(session.Messages)
+	remainingBeforeLimit := remainingTokens(contextWindowTokens, estimatedTokens)
+
+	// Build system prompt.
+	systemPrompt := a.context.BuildFor(PromptContext{
+		SessionID:                sessionID,
+		IsDirect:                 isDirect,
+		IsHeartbeat:              isHeartbeat,
+		Now:                      msg.Timestamp,
+		Provider:                 prov.Name(),
+		Model:                    model,
+		ContextWindowTokens:      contextWindowTokens,
+		EstimatedContextTokens:   estimatedTokens,
+		EstimatedRemainingTokens: remainingBeforeLimit,
+	})
+
 	// Pre-compaction memory flush + compaction summary.
-	if err := a.runCompactionIfNeeded(ctx, session, prov, model, systemPrompt, toolDefs, msg.Timestamp, isHeartbeat); err != nil {
+	if err := a.runCompactionIfNeeded(ctx, session, prov, model, systemPrompt, toolDefs, msg.Timestamp, isHeartbeat, contextWindowTokens); err != nil {
 		slog.Warn("agent: compaction step failed", "session_id", sessionID, "error", err)
 	}
 
+	estimatedTokens = estimateSessionTokens(session.Messages)
+	remainingBeforeLimit = remainingTokens(contextWindowTokens, estimatedTokens)
+	systemPrompt = a.context.BuildFor(PromptContext{
+		SessionID:                sessionID,
+		IsDirect:                 isDirect,
+		IsHeartbeat:              isHeartbeat,
+		Now:                      msg.Timestamp,
+		Provider:                 prov.Name(),
+		Model:                    model,
+		ContextWindowTokens:      contextWindowTokens,
+		EstimatedContextTokens:   estimatedTokens,
+		EstimatedRemainingTokens: remainingBeforeLimit,
+	})
+
 	// Main tool loop for the user-visible turn.
-	updated, _, err := a.runToolLoop(ctx, session.Messages, prov, model, systemPrompt, toolDefs, &msg, true, a.maxIterations)
+	updated, _, err := a.runToolLoop(ctx, session.Messages, prov, model, systemPrompt, toolDefs, &msg, true, a.maxIterations, contextWindowTokens)
 	if err != nil {
 		slog.Error("agent: provider error", "error", err)
 		a.sendError(msg, fmt.Sprintf("LLM error: %v", err))
@@ -180,6 +206,7 @@ func (a *AgentLoop) runToolLoop(
 	origin *bus.Message,
 	sendReply bool,
 	maxIterations int,
+	contextWindowTokens int,
 ) ([]providerPkg.Message, string, error) {
 	history := CloneMessages(messages)
 	finalContent := ""
@@ -189,11 +216,20 @@ func (a *AgentLoop) runToolLoop(
 	}
 
 	for iteration := 0; iteration < maxIterations; iteration++ {
+		callPrompt := systemPrompt + buildRuntimeSnapshotPrompt(
+			prov.Name(),
+			model,
+			contextWindowTokens,
+			history,
+			toolDefs,
+			iteration+1,
+			maxIterations,
+		)
 		req := &providerPkg.ChatRequest{
 			Model:        model,
 			Messages:     history,
 			Tools:        toolDefs,
-			SystemPrompt: systemPrompt,
+			SystemPrompt: callPrompt,
 		}
 
 		resp, err := prov.ChatCompletion(ctx, req)
@@ -261,6 +297,7 @@ func (a *AgentLoop) runCompactionIfNeeded(
 	toolDefs []providerPkg.ToolDef,
 	now time.Time,
 	isHeartbeat bool,
+	contextWindowTokens int,
 ) error {
 	if a.memory == nil {
 		return nil
@@ -276,7 +313,18 @@ func (a *AgentLoop) runCompactionIfNeeded(
 			Content: flushPrompt,
 		})
 		flushSystemPrompt := systemPrompt + "\n\nThis is a silent pre-compaction housekeeping turn. Reply with NO_REPLY when done."
-		if _, _, err := a.runToolLoop(ctx, flushMessages, prov, model, flushSystemPrompt, toolDefs, nil, false, 6); err != nil {
+		if _, _, err := a.runToolLoop(
+			ctx,
+			flushMessages,
+			prov,
+			model,
+			flushSystemPrompt,
+			toolDefs,
+			nil,
+			false,
+			6,
+			contextWindowTokens,
+		); err != nil {
 			slog.Warn("agent: pre-compaction memory flush failed", "session_id", session.ID, "error", err)
 		} else {
 			count := session.CompactionCount
@@ -328,6 +376,62 @@ func estimateSessionTokens(messages []providerPkg.Message) int {
 	}
 	// Rough heuristic: ~4 chars/token in mixed English/code text.
 	return totalChars / 4
+}
+
+func estimateToolDefTokens(toolDefs []providerPkg.ToolDef) int {
+	totalChars := 0
+	for _, td := range toolDefs {
+		totalChars += len(td.Name) + len(td.Description) + len(td.Parameters)
+	}
+	return totalChars / 4
+}
+
+func remainingTokens(contextWindowTokens, estimatedTokens int) int {
+	if contextWindowTokens <= 0 {
+		return 0
+	}
+	remaining := contextWindowTokens - estimatedTokens
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+func buildRuntimeSnapshotPrompt(
+	providerName string,
+	model string,
+	contextWindowTokens int,
+	history []providerPkg.Message,
+	toolDefs []providerPkg.ToolDef,
+	iteration int,
+	maxIterations int,
+) string {
+	if providerName == "" && model == "" && contextWindowTokens <= 0 {
+		return ""
+	}
+
+	messageTokens := estimateSessionTokens(history)
+	toolTokens := estimateToolDefTokens(toolDefs)
+	estimatedTokens := messageTokens + toolTokens
+	remaining := remainingTokens(contextWindowTokens, estimatedTokens)
+
+	var sb strings.Builder
+	sb.WriteString("\n\n## Runtime Snapshot (live)\n")
+	if providerName != "" {
+		sb.WriteString(fmt.Sprintf("- Provider: %s\n", providerName))
+	}
+	if model != "" {
+		sb.WriteString(fmt.Sprintf("- Model: %s\n", model))
+	}
+	sb.WriteString(fmt.Sprintf("- Tool-loop iteration: %d/%d\n", iteration, maxIterations))
+	sb.WriteString(fmt.Sprintf("- Messages in context: %d\n", len(history)))
+	sb.WriteString(fmt.Sprintf("- Estimated input tokens this call: %d\n", estimatedTokens))
+	if contextWindowTokens > 0 {
+		sb.WriteString(fmt.Sprintf("- Context window (configured): %d tokens\n", contextWindowTokens))
+		sb.WriteString(fmt.Sprintf("- Estimated remaining before limit: %d tokens\n", remaining))
+	}
+	sb.WriteString("- Estimates are approximate; use them for planning only\n")
+	return sb.String()
 }
 
 func (a *AgentLoop) generateCompactionSummary(

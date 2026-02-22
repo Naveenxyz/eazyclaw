@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { MessageSquare } from "lucide-react";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import type { Message } from "@/types";
 
@@ -15,17 +16,21 @@ export function MessageList({ messages }: MessageListProps) {
 
   if (messages.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-[#08090d]">
-        <p className="text-sm font-mono text-slate-500">
-          Select a session or start chatting
+      <div className="flex flex-1 flex-col items-center justify-center bg-base">
+        <MessageSquare size={32} className="text-fg-3 opacity-30" />
+        <p className="mt-3 font-display font-bold text-fg-3 text-sm">
+          Start a conversation
+        </p>
+        <p className="mt-1 text-fg-3 text-xs opacity-50">
+          Type a message below to begin
         </p>
       </div>
     );
   }
 
   return (
-    <div className="flex-1 overflow-y-auto bg-[#08090d] p-4">
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
+    <div className="flex-1 overflow-y-auto p-4 bg-base">
+      <div className="mx-auto flex max-w-3xl flex-col space-y-3">
         {messages.map((message, index) => (
           <MessageBubble key={index} message={message} />
         ))}

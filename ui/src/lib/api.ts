@@ -1,4 +1,15 @@
-import type { StatusResponse, SessionSummary, Session, Skill, ChannelConfig, MemoryNode } from "@/types";
+import type {
+  StatusResponse,
+  SessionSummary,
+  Session,
+  Skill,
+  ChannelConfig,
+  DiscordAdminState,
+  TelegramAdminState,
+  MemoryNode,
+  CronJob,
+  HeartbeatStatus,
+} from "@/types";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -52,6 +63,36 @@ export async function putConfig(data: Partial<ChannelConfig>): Promise<{ status:
   });
 }
 
+export async function getDiscordAdminState(): Promise<DiscordAdminState> {
+  return request("/api/discord");
+}
+
+export async function updateDiscordApproval(
+  action: "approve" | "reject",
+  userId: string
+): Promise<DiscordAdminState> {
+  return request("/api/discord/approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, user_id: userId }),
+  });
+}
+
+export async function getTelegramAdminState(): Promise<TelegramAdminState> {
+  return request("/api/telegram");
+}
+
+export async function updateTelegramApproval(
+  action: "approve" | "reject",
+  userId: string
+): Promise<TelegramAdminState> {
+  return request("/api/telegram/approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, user_id: userId }),
+  });
+}
+
 export async function getMemoryTree(): Promise<MemoryNode> {
   return request("/api/memory");
 }
@@ -66,4 +107,44 @@ export async function putMemoryFile(path: string, content: string): Promise<void
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
   });
+}
+
+// --- Cron API ---
+
+export async function getCronJobs(): Promise<CronJob[]> {
+  return request("/api/cron");
+}
+
+export async function addCronJob(schedule: string, task: string): Promise<{ id: string; status: string }> {
+  return request("/api/cron", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ schedule, task }),
+  });
+}
+
+export async function updateCronJob(id: string, data: { schedule?: string; task?: string; enabled?: boolean }): Promise<{ id: string; status: string }> {
+  return request(`/api/cron/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteCronJob(id: string): Promise<{ id: string; status: string }> {
+  return request(`/api/cron/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function toggleCronJob(id: string): Promise<{ id: string; enabled: boolean }> {
+  return request(`/api/cron/${encodeURIComponent(id)}/toggle`, {
+    method: "POST",
+  });
+}
+
+// --- Heartbeat API ---
+
+export async function getHeartbeatStatus(): Promise<HeartbeatStatus> {
+  return request("/api/heartbeat");
 }

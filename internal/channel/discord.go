@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,24 @@ type typingState struct {
 	cancel context.CancelFunc
 }
 
+// DiscordPendingApproval captures a disallowed DM sender awaiting approval.
+type DiscordPendingApproval struct {
+	UserID       string    `json:"user_id"`
+	Username     string    `json:"username"`
+	Preview      string    `json:"preview"`
+	MessageCount int       `json:"message_count"`
+	FirstSeenAt  time.Time `json:"first_seen_at"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
+}
+
+// DiscordAdminState is surfaced in the config console for DM approvals.
+type DiscordAdminState struct {
+	GroupPolicy  string                   `json:"group_policy"`
+	DMPolicy     string                   `json:"dm_policy"`
+	AllowedUsers []string                 `json:"allowed_users"`
+	Pending      []DiscordPendingApproval `json:"pending_approvals"`
+}
+
 // DiscordChannel integrates with the Discord API.
 type DiscordChannel struct {
 	token        string
@@ -32,6 +51,8 @@ type DiscordChannel struct {
 	ctx          context.Context
 	typingMu     sync.Mutex
 	typingByChat map[string]*typingState
+	stateMu      sync.RWMutex
+	pendingDMs   map[string]DiscordPendingApproval
 }
 
 // NewDiscordChannel creates a new DiscordChannel.
@@ -45,6 +66,7 @@ func NewDiscordChannel(token string, cfg config.DiscordChannelConfig) *DiscordCh
 		cfg:          cfg,
 		allowedUsers: allowed,
 		typingByChat: make(map[string]*typingState),
+		pendingDMs:   make(map[string]DiscordPendingApproval),
 	}
 }
 
@@ -86,21 +108,30 @@ func (d *DiscordChannel) messageCreateHandler(_ *discordgo.Session, m *discordgo
 
 	senderID := m.Author.ID
 
-	// Check allowlist.
-	if len(d.allowedUsers) > 0 && !d.allowedUsers[senderID] {
-		slog.Warn("discord: message from disallowed user", "sender_id", senderID)
-		return
-	}
-
 	isDM := m.GuildID == ""
 
 	// DM policy check.
 	if isDM {
-		if d.cfg.DM.Policy == "deny" {
+		if d.dmPolicy() == "deny" {
 			slog.Debug("discord: DM denied by policy", "sender_id", senderID)
 			return
 		}
+		if !d.isDMUserAllowed(senderID) {
+			at := m.Timestamp
+			if at.IsZero() {
+				at = time.Now()
+			}
+			d.recordPendingDM(senderID, m.Author.Username, m.Content, at)
+			slog.Warn("discord: DM from disallowed user", "sender_id", senderID)
+			return
+		}
 		// "allow" and "pairing" both allow the DM through.
+	} else {
+		// For guild messages, keep traditional optional user allowlist semantics.
+		if !d.isGuildUserAllowed(senderID) {
+			slog.Warn("discord: message from disallowed user", "sender_id", senderID)
+			return
+		}
 	}
 
 	// Guild message filtering.
@@ -160,6 +191,7 @@ func (d *DiscordChannel) messageCreateHandler(_ *discordgo.Session, m *discordgo
 		ID:        m.ID,
 		ChannelID: "discord",
 		SenderID:  chatSenderID,
+		UserID:    senderID,
 		GroupID:   groupID,
 		Text:      text,
 		Timestamp: m.Timestamp,
@@ -170,9 +202,42 @@ func (d *DiscordChannel) messageCreateHandler(_ *discordgo.Session, m *discordgo
 	slog.Debug("discord: message received", "sender_id", senderID, "channel_id", m.ChannelID)
 }
 
+// isDMUserAllowed enforces stricter DM defaults for allowlist mode.
+// In allowlist mode, DMs are denied unless sender is explicitly allowlisted.
+func (d *DiscordChannel) isDMUserAllowed(senderID string) bool {
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+
+	if d.cfg.GroupPolicy == "allowlist" {
+		return d.allowedUsers[senderID]
+	}
+	if len(d.allowedUsers) == 0 {
+		return true
+	}
+	return d.allowedUsers[senderID]
+}
+
+func (d *DiscordChannel) isGuildUserAllowed(senderID string) bool {
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	if len(d.allowedUsers) == 0 {
+		return true
+	}
+	return d.allowedUsers[senderID]
+}
+
+func (d *DiscordChannel) dmPolicy() string {
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+	return d.cfg.DM.Policy
+}
+
 // isGuildMessageAllowed checks whether a message from a guild/channel is permitted
 // and whether mention is required. Returns (allowed, requireMention).
 func (d *DiscordChannel) isGuildMessageAllowed(guildID, channelID string) (bool, bool) {
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+
 	// Default requireMention is true.
 	defaultRequireMention := true
 
@@ -219,6 +284,135 @@ func (d *DiscordChannel) checkGuildChannel(guild config.DiscordGuildConfig, chan
 	}
 
 	return true, requireMention
+}
+
+func (d *DiscordChannel) recordPendingDM(userID, username, content string, at time.Time) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	preview := strings.TrimSpace(content)
+	if len(preview) > 120 {
+		preview = preview[:120] + "..."
+	}
+	if preview == "" {
+		preview = "(no text)"
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	existing, ok := d.pendingDMs[userID]
+	if !ok {
+		d.pendingDMs[userID] = DiscordPendingApproval{
+			UserID:       userID,
+			Username:     strings.TrimSpace(username),
+			Preview:      preview,
+			MessageCount: 1,
+			FirstSeenAt:  at,
+			LastSeenAt:   at,
+		}
+		return
+	}
+
+	if strings.TrimSpace(username) != "" {
+		existing.Username = strings.TrimSpace(username)
+	}
+	existing.Preview = preview
+	existing.MessageCount++
+	existing.LastSeenAt = at
+	d.pendingDMs[userID] = existing
+}
+
+// Snapshot returns a thread-safe snapshot for Discord admin APIs.
+func (d *DiscordChannel) Snapshot() DiscordAdminState {
+	d.stateMu.RLock()
+	defer d.stateMu.RUnlock()
+
+	allowed := make([]string, 0, len(d.allowedUsers))
+	for id := range d.allowedUsers {
+		allowed = append(allowed, id)
+	}
+	sort.Strings(allowed)
+
+	pending := make([]DiscordPendingApproval, 0, len(d.pendingDMs))
+	for _, p := range d.pendingDMs {
+		pending = append(pending, p)
+	}
+	sort.Slice(pending, func(i, j int) bool {
+		return pending[i].LastSeenAt.After(pending[j].LastSeenAt)
+	})
+
+	return DiscordAdminState{
+		GroupPolicy:  d.cfg.GroupPolicy,
+		DMPolicy:     d.cfg.DM.Policy,
+		AllowedUsers: allowed,
+		Pending:      pending,
+	}
+}
+
+// ApplyConfig updates runtime Discord policy and allowlist without restart.
+func (d *DiscordChannel) ApplyConfig(cfg config.DiscordChannelConfig) {
+	allowed := make(map[string]bool, len(cfg.AllowedUsers))
+	for _, u := range cfg.AllowedUsers {
+		id := strings.TrimSpace(u)
+		if id != "" {
+			allowed[id] = true
+		}
+	}
+
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+
+	d.cfg = cfg
+	d.allowedUsers = allowed
+	for id := range d.pendingDMs {
+		if allowed[id] {
+			delete(d.pendingDMs, id)
+		}
+	}
+}
+
+// ApproveUser adds a user to allowlist and removes any pending approval entry.
+func (d *DiscordChannel) ApproveUser(userID string) bool {
+	id := strings.TrimSpace(userID)
+	if id == "" {
+		return false
+	}
+
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	d.allowedUsers[id] = true
+	delete(d.pendingDMs, id)
+
+	exists := false
+	for _, u := range d.cfg.AllowedUsers {
+		if strings.TrimSpace(u) == id {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		d.cfg.AllowedUsers = append(d.cfg.AllowedUsers, id)
+	}
+
+	return true
+}
+
+// RejectUser clears a pending approval entry.
+func (d *DiscordChannel) RejectUser(userID string) bool {
+	id := strings.TrimSpace(userID)
+	if id == "" {
+		return false
+	}
+
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	_, existed := d.pendingDMs[id]
+	delete(d.pendingDMs, id)
+	return existed
 }
 
 // Send sends an outbound message to Discord, chunking if necessary.
