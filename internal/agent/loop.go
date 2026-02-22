@@ -103,6 +103,12 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		return
 	}
 
+	// Repair any orphaned tool messages from previous broken compactions.
+	if repaired := repairOrphanedToolMessages(session); repaired > 0 {
+		slog.Info("agent: repaired orphaned tool messages", "session_id", sessionID, "removed", repaired)
+		a.saveSession(session)
+	}
+
 	// Reject empty messages — some providers error on empty user content.
 	if msg.Text == "" {
 		slog.Debug("agent: ignoring empty message", "session_id", sessionID)
@@ -503,6 +509,65 @@ func (a *AgentLoop) runCompactionIfNeeded(
 	}
 
 	return nil
+}
+
+// repairOrphanedToolMessages removes tool messages whose corresponding
+// assistant+tool_calls message is missing (e.g., removed by compaction).
+// Also removes assistant messages with tool_calls that have no following
+// tool responses. Returns the number of messages removed.
+func repairOrphanedToolMessages(session *Session) int {
+	if len(session.Messages) == 0 {
+		return 0
+	}
+
+	// Collect all tool_call IDs from assistant messages.
+	knownCallIDs := make(map[string]bool)
+	for _, m := range session.Messages {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				knownCallIDs[tc.ID] = true
+			}
+		}
+	}
+
+	// Collect all tool_call IDs that have responses.
+	respondedCallIDs := make(map[string]bool)
+	for _, m := range session.Messages {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			respondedCallIDs[m.ToolCallID] = true
+		}
+	}
+
+	var cleaned []providerPkg.Message
+	removed := 0
+	for _, m := range session.Messages {
+		if m.Role == "tool" && m.ToolCallID != "" && !knownCallIDs[m.ToolCallID] {
+			// Orphaned tool response — its assistant message was removed.
+			removed++
+			continue
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			// Check if ALL tool calls have responses.
+			allResponded := true
+			for _, tc := range m.ToolCalls {
+				if !respondedCallIDs[tc.ID] {
+					allResponded = false
+					break
+				}
+			}
+			if !allResponded {
+				// Remove the assistant message and its partial tool responses.
+				removed++
+				continue
+			}
+		}
+		cleaned = append(cleaned, m)
+	}
+
+	if removed > 0 {
+		session.Messages = cleaned
+	}
+	return removed
 }
 
 // findSafeSplitPoint finds the best index to split messages for compaction.
