@@ -49,6 +49,8 @@ Working toward:
 
 ## Quick Start
 
+**New here?** Read the **[Getting Started Guide](GETTING_STARTED.md)** — deploy to Telegram + Railway in under 10 minutes.
+
 ```bash
 # 1. Configure environment
 cp .env.example .env
