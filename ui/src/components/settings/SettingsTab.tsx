@@ -59,15 +59,15 @@ export default function SettingsTab() {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-zinc-500">Loading configuration...</p>
+      <div className="flex h-full items-center justify-center bg-[#08090d]">
+        <p className="text-sm font-mono text-slate-500">Loading configuration...</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full items-center justify-center bg-[#08090d]">
         <p className="text-sm text-red-400">{error}</p>
       </div>
     );
@@ -76,7 +76,7 @@ export default function SettingsTab() {
   if (!config) return null;
 
   return (
-    <div className="mx-auto max-w-4xl p-6">
+    <div className="mx-auto max-w-4xl p-6 bg-[#08090d]">
       <div className="flex flex-col gap-6">
         <DiscordSettings
           config={config.discord}
@@ -87,7 +87,7 @@ export default function SettingsTab() {
           onChange={handleTelegramChange}
         />
 
-        <div className="rounded-lg border border-yellow-800/50 bg-yellow-950/30 p-4">
+        <div className="glass-card rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-4">
           <p className="text-sm text-yellow-400">
             Changes require container restart to take effect.
           </p>
@@ -95,10 +95,10 @@ export default function SettingsTab() {
 
         {saveStatus && (
           <div
-            className={`rounded-lg border p-4 text-sm ${
+            className={`glass-card rounded-lg border p-4 text-sm ${
               saveStatus.includes("successfully")
-                ? "border-emerald-800/50 bg-emerald-950/30 text-emerald-400"
-                : "border-red-800/50 bg-red-950/30 text-red-400"
+                ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-400"
+                : "border-red-500/20 bg-red-500/5 text-red-400"
             }`}
           >
             {saveStatus}

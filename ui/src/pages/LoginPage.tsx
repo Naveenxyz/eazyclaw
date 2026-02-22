@@ -21,9 +21,45 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-950">
-      <div className="w-full max-w-sm rounded-lg border border-zinc-800 bg-zinc-900 p-8 shadow-lg">
-        <h1 className="mb-1 text-center text-2xl font-bold text-violet-500">
+    <div
+      className="flex min-h-screen items-center justify-center"
+      style={{
+        background: `
+          radial-gradient(ellipse 80% 60% at 50% 40%, rgba(139, 92, 246, 0.12) 0%, transparent 60%),
+          radial-gradient(ellipse 60% 50% at 30% 60%, rgba(34, 211, 238, 0.08) 0%, transparent 50%),
+          radial-gradient(ellipse 50% 40% at 70% 30%, rgba(167, 139, 250, 0.06) 0%, transparent 50%),
+          #08090d
+        `,
+      }}
+    >
+      {/* Animated gradient orb */}
+      <div
+        className="pointer-events-none fixed inset-0 overflow-hidden"
+        aria-hidden="true"
+      >
+        <div
+          className="absolute rounded-full opacity-20 blur-3xl"
+          style={{
+            width: 500,
+            height: 500,
+            top: '20%',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'linear-gradient(135deg, #8b5cf6, #22d3ee)',
+            animation: 'pulse-glow 6s ease-in-out infinite',
+          }}
+        />
+      </div>
+
+      <style>{`
+        @keyframes pulse-glow {
+          0%, 100% { opacity: 0.15; transform: translateX(-50%) scale(1); }
+          50% { opacity: 0.25; transform: translateX(-50%) scale(1.05); }
+        }
+      `}</style>
+
+      <div className="glass-card relative z-10 w-full max-w-sm p-8">
+        <h1 className="mb-1 text-center text-2xl font-bold font-mono text-violet-500">
           EazyClaw
         </h1>
         <p className="mb-6 text-center text-sm text-zinc-400">
@@ -44,7 +80,7 @@ export default function LoginPage() {
             onChange={(e) => setPassword(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Enter password"
-            className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+            className="w-full rounded-md border border-white/10 bg-[#0f1117] px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-colors focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
           />
         </div>
 
@@ -55,7 +91,16 @@ export default function LoginPage() {
         <button
           onClick={handleLogin}
           disabled={loading}
-          className="w-full rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50"
+          className="w-full rounded-md px-4 py-2 text-sm font-medium text-white transition-all disabled:opacity-50"
+          style={{
+            background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)',
+          }}
+          onMouseEnter={(e) => {
+            (e.target as HTMLButtonElement).style.background = 'linear-gradient(135deg, #a78bfa, #8b5cf6)';
+          }}
+          onMouseLeave={(e) => {
+            (e.target as HTMLButtonElement).style.background = 'linear-gradient(135deg, #8b5cf6, #7c3aed)';
+          }}
         >
           {loading ? "Signing in..." : "Sign In"}
         </button>

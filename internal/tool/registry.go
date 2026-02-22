@@ -86,3 +86,14 @@ func (r *Registry) List() []string {
 	}
 	return names
 }
+
+// Descriptions returns a map of tool name to description for all registered tools.
+func (r *Registry) Descriptions() map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	descs := make(map[string]string, len(r.tools))
+	for name, t := range r.tools {
+		descs[name] = t.Description()
+	}
+	return descs
+}

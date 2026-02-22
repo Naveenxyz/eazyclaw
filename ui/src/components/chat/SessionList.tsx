@@ -27,9 +27,9 @@ function truncateId(id: string, maxLen = 12): string {
 
 export function SessionList({ sessions, selectedId, onSelect }: SessionListProps) {
   return (
-    <div className="flex w-[260px] flex-col border-r border-zinc-800 bg-zinc-900">
-      <div className="border-b border-zinc-800 px-4 py-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
+    <div className="flex w-[260px] flex-col border-r border-violet-500/10 bg-[#0f1117]">
+      <div className="border-b border-violet-500/10 px-4 py-3">
+        <h2 className="text-sm font-mono font-semibold uppercase tracking-wider text-slate-400">
           Sessions
         </h2>
       </div>
@@ -42,14 +42,14 @@ export function SessionList({ sessions, selectedId, onSelect }: SessionListProps
               onClick={() => onSelect(session.id)}
               className={`w-full px-4 py-3 text-left transition-colors ${
                 isActive
-                  ? "bg-violet-600/20 text-violet-200"
-                  : "text-zinc-300 hover:bg-zinc-800"
+                  ? "border-l-2 border-violet-500 bg-violet-500/10 text-slate-200"
+                  : "border-l-2 border-transparent text-slate-300 hover:bg-white/5"
               }`}
             >
-              <div className="truncate text-sm font-medium">
+              <div className="truncate text-sm font-medium font-mono">
                 {truncateId(session.id)}
               </div>
-              <div className="mt-1 flex items-center justify-between text-xs text-zinc-500">
+              <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
                 <span>{session.message_count} messages</span>
                 <span>{formatRelativeTime(session.updated)}</span>
               </div>

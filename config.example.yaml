@@ -1,8 +1,8 @@
 # EazyClaw Configuration
 # API keys should be set via environment variables, not in this file.
 
-data_dir: /data
-workspace_dir: /data/workspace
+data_dir: /data/eazyclaw
+workspace_dir: /data/eazyclaw/workspace
 
 providers:
   default_model: "k2p5"
@@ -63,4 +63,26 @@ tools:
   browser:
     headless: true
 
-skills_dir: /data/skills
+skills_dir: /data/eazyclaw/skills
+
+heartbeat:
+  enabled: false
+  interval: 30m
+
+memory:
+  enabled: true
+  context_max_chars: 12000
+  daily_files_in_context: 2
+  compaction:
+    enabled: true
+    trigger_messages: 80
+    keep_recent_messages: 30
+    summary_max_chars: 3500
+    context_window_tokens: 200000
+    reserve_tokens_floor: 20000
+    soft_threshold_tokens: 4000
+    pre_flush_memory_write: true
+  background:
+    enabled: true
+    interval: 10m
+    max_runs: 20

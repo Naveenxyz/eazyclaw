@@ -15,8 +15,8 @@ export function MessageList({ messages }: MessageListProps) {
 
   if (messages.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className="text-sm text-zinc-500">
+      <div className="flex flex-1 items-center justify-center bg-[#08090d]">
+        <p className="text-sm font-mono text-slate-500">
           Select a session or start chatting
         </p>
       </div>
@@ -24,7 +24,7 @@ export function MessageList({ messages }: MessageListProps) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-4">
+    <div className="flex-1 overflow-y-auto bg-[#08090d] p-4">
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
         {messages.map((message, index) => (
           <MessageBubble key={index} message={message} />

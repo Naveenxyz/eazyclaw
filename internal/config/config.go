@@ -16,6 +16,42 @@ type Config struct {
 	Channels     ChannelsConfig  `yaml:"channels"`
 	Tools        ToolsConfig     `yaml:"tools"`
 	SkillsDir    string          `yaml:"skills_dir" envconfig:"SKILLS_DIR"`
+	Heartbeat    HeartbeatConfig `yaml:"heartbeat"`
+	Memory       MemoryConfig    `yaml:"memory"`
+}
+
+// HeartbeatConfig holds settings for the periodic heartbeat runner.
+type HeartbeatConfig struct {
+	Enabled  bool          `yaml:"enabled" envconfig:"HEARTBEAT_ENABLED"`
+	Interval time.Duration `yaml:"interval" envconfig:"HEARTBEAT_INTERVAL"`
+}
+
+// MemoryConfig controls OpenClaw-style file memory behavior.
+type MemoryConfig struct {
+	Enabled             *bool                  `yaml:"enabled"`
+	ContextMaxChars     int                    `yaml:"context_max_chars"`
+	DailyFilesInContext int                    `yaml:"daily_files_in_context"`
+	Compaction          MemoryCompactionConfig `yaml:"compaction"`
+	Background          MemoryBackgroundConfig `yaml:"background"`
+}
+
+// MemoryCompactionConfig tunes compaction + pre-compaction memory flushing.
+type MemoryCompactionConfig struct {
+	Enabled             *bool `yaml:"enabled"`
+	TriggerMessages     int   `yaml:"trigger_messages"`
+	KeepRecentMessages  int   `yaml:"keep_recent_messages"`
+	SummaryMaxChars     int   `yaml:"summary_max_chars"`
+	ContextWindowTokens int   `yaml:"context_window_tokens"`
+	ReserveTokensFloor  int   `yaml:"reserve_tokens_floor"`
+	SoftThresholdTokens int   `yaml:"soft_threshold_tokens"`
+	PreFlushMemoryWrite *bool `yaml:"pre_flush_memory_write"`
+}
+
+// MemoryBackgroundConfig controls periodic background memory digests.
+type MemoryBackgroundConfig struct {
+	Enabled  *bool         `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval"`
+	MaxRuns  int           `yaml:"max_runs"`
 }
 
 // ProvidersConfig holds LLM provider settings.
@@ -65,7 +101,7 @@ type DiscordChannelConfig struct {
 	AllowedUsers []string                      `yaml:"allowed_users" json:"allowed_users"`
 	GroupPolicy  string                        `yaml:"group_policy" json:"group_policy"` // "allowlist" | "open"
 	DM           DiscordDMConfig               `yaml:"dm" json:"dm"`
-	Guilds       map[string]DiscordGuildConfig  `yaml:"guilds,omitempty" json:"guilds,omitempty"`
+	Guilds       map[string]DiscordGuildConfig `yaml:"guilds,omitempty" json:"guilds,omitempty"`
 }
 
 // TelegramChatConfig holds per-chat settings for Telegram.
@@ -133,7 +169,7 @@ func Load(path string) (*Config, error) {
 
 func setDefaults(cfg *Config) {
 	if cfg.DataDir == "" {
-		cfg.DataDir = "/data"
+		cfg.DataDir = "/data/eazyclaw"
 	}
 	if cfg.WorkspaceDir == "" {
 		cfg.WorkspaceDir = cfg.DataDir + "/workspace"
@@ -162,4 +198,53 @@ func setDefaults(cfg *Config) {
 	if cfg.Channels.Telegram.DM.Policy == "" {
 		cfg.Channels.Telegram.DM.Policy = "allow"
 	}
+	if cfg.Heartbeat.Interval == 0 {
+		cfg.Heartbeat.Interval = 5 * time.Minute
+	}
+	if cfg.Memory.Enabled == nil {
+		cfg.Memory.Enabled = boolPtr(true)
+	}
+	if cfg.Memory.ContextMaxChars == 0 {
+		cfg.Memory.ContextMaxChars = 12000
+	}
+	if cfg.Memory.DailyFilesInContext == 0 {
+		cfg.Memory.DailyFilesInContext = 2
+	}
+	if cfg.Memory.Compaction.Enabled == nil {
+		cfg.Memory.Compaction.Enabled = boolPtr(true)
+	}
+	if cfg.Memory.Compaction.TriggerMessages == 0 {
+		cfg.Memory.Compaction.TriggerMessages = 80
+	}
+	if cfg.Memory.Compaction.KeepRecentMessages == 0 {
+		cfg.Memory.Compaction.KeepRecentMessages = 30
+	}
+	if cfg.Memory.Compaction.SummaryMaxChars == 0 {
+		cfg.Memory.Compaction.SummaryMaxChars = 3500
+	}
+	if cfg.Memory.Compaction.ContextWindowTokens == 0 {
+		cfg.Memory.Compaction.ContextWindowTokens = 200000
+	}
+	if cfg.Memory.Compaction.ReserveTokensFloor == 0 {
+		cfg.Memory.Compaction.ReserveTokensFloor = 20000
+	}
+	if cfg.Memory.Compaction.SoftThresholdTokens == 0 {
+		cfg.Memory.Compaction.SoftThresholdTokens = 4000
+	}
+	if cfg.Memory.Compaction.PreFlushMemoryWrite == nil {
+		cfg.Memory.Compaction.PreFlushMemoryWrite = boolPtr(true)
+	}
+	if cfg.Memory.Background.Enabled == nil {
+		cfg.Memory.Background.Enabled = boolPtr(true)
+	}
+	if cfg.Memory.Background.Interval == 0 {
+		cfg.Memory.Background.Interval = 10 * time.Minute
+	}
+	if cfg.Memory.Background.MaxRuns == 0 {
+		cfg.Memory.Background.MaxRuns = 20
+	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }

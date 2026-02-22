@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	"github.com/eazyclaw/eazyclaw/internal/bus"
 	providerPkg "github.com/eazyclaw/eazyclaw/internal/provider"
@@ -21,6 +23,7 @@ type AgentLoop struct {
 	tools         *tool.Registry
 	sessions      *SessionStore
 	context       *ContextBuilder
+	memory        *MemoryManager
 	maxIterations int
 	router        *router.Router
 }
@@ -32,6 +35,7 @@ func NewAgentLoop(
 	tools *tool.Registry,
 	sessions *SessionStore,
 	contextBuilder *ContextBuilder,
+	memoryManager *MemoryManager,
 	r *router.Router,
 ) *AgentLoop {
 	return &AgentLoop{
@@ -40,6 +44,7 @@ func NewAgentLoop(
 		tools:         tools,
 		sessions:      sessions,
 		context:       contextBuilder,
+		memory:        memoryManager,
 		maxIterations: defaultMaxIterations,
 		router:        r,
 	}
@@ -55,6 +60,11 @@ func (a *AgentLoop) SetMaxIterations(n int) {
 // Run starts the agent loop, processing messages from the bus until ctx is cancelled.
 func (a *AgentLoop) Run(ctx context.Context) error {
 	slog.Info("agent loop started")
+
+	if a.memory != nil && a.memory.BackgroundDigestEnabled() {
+		go a.runBackgroundDigest(ctx)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -72,6 +82,10 @@ func (a *AgentLoop) Run(ctx context.Context) error {
 
 // handleMessage processes a single inbound message through the LLM + tool loop.
 func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
+	if msg.Timestamp.IsZero() {
+		msg.Timestamp = time.Now()
+	}
+
 	// Check if the sender is allowed.
 	if !a.router.IsAllowed(msg) {
 		slog.Warn("agent: message from disallowed user", "channel", msg.ChannelID, "sender", msg.SenderID)
@@ -100,9 +114,30 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		Role:    "user",
 		Content: msg.Text,
 	})
+	isDirect := msg.GroupID == ""
+
+	if a.memory != nil {
+		if err := a.memory.EnsureDailyFile(msg.Timestamp); err != nil {
+			slog.Warn("agent: failed to ensure daily memory file", "error", err)
+		}
+		if isDirect {
+			updated, err := a.memory.MaybeCaptureUserProfileFromMessage(msg.Text)
+			if err != nil {
+				slog.Warn("agent: failed to update USER.md from direct message", "session_id", sessionID, "error", err)
+			} else if updated {
+				slog.Info("agent: updated USER.md from direct message", "session_id", sessionID)
+			}
+		}
+	}
 
 	// Build system prompt.
-	systemPrompt := a.context.Build()
+	isHeartbeat := msg.ChannelID == "heartbeat"
+	systemPrompt := a.context.BuildFor(PromptContext{
+		SessionID:   sessionID,
+		IsDirect:    isDirect,
+		IsHeartbeat: isHeartbeat,
+		Now:         msg.Timestamp,
+	})
 
 	// Get tool definitions.
 	toolDefs := a.tools.ToolDefs()
@@ -115,44 +150,78 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		return
 	}
 
-	// Tool loop.
-	for iteration := 0; iteration < a.maxIterations; iteration++ {
+	// Pre-compaction memory flush + compaction summary.
+	if err := a.runCompactionIfNeeded(ctx, session, prov, model, systemPrompt, toolDefs, msg.Timestamp, isHeartbeat); err != nil {
+		slog.Warn("agent: compaction step failed", "session_id", sessionID, "error", err)
+	}
+
+	// Main tool loop for the user-visible turn.
+	updated, _, err := a.runToolLoop(ctx, session.Messages, prov, model, systemPrompt, toolDefs, &msg, true, a.maxIterations)
+	if err != nil {
+		slog.Error("agent: provider error", "error", err)
+		a.sendError(msg, fmt.Sprintf("LLM error: %v", err))
+		a.saveSession(session)
+		return
+	}
+	session.Messages = updated
+
+	// Trim and save session.
+	a.sessions.Trim(session, 160)
+	a.saveSession(session)
+}
+
+func (a *AgentLoop) runToolLoop(
+	ctx context.Context,
+	messages []providerPkg.Message,
+	prov providerPkg.Provider,
+	model string,
+	systemPrompt string,
+	toolDefs []providerPkg.ToolDef,
+	origin *bus.Message,
+	sendReply bool,
+	maxIterations int,
+) ([]providerPkg.Message, string, error) {
+	history := CloneMessages(messages)
+	finalContent := ""
+
+	if maxIterations <= 0 {
+		maxIterations = 1
+	}
+
+	for iteration := 0; iteration < maxIterations; iteration++ {
 		req := &providerPkg.ChatRequest{
 			Model:        model,
-			Messages:     session.Messages,
+			Messages:     history,
 			Tools:        toolDefs,
 			SystemPrompt: systemPrompt,
 		}
 
 		resp, err := prov.ChatCompletion(ctx, req)
 		if err != nil {
-			slog.Error("agent: provider error", "error", err, "iteration", iteration)
-			a.sendError(msg, fmt.Sprintf("LLM error: %v", err))
-			a.saveSession(session)
-			return
+			return history, finalContent, err
 		}
 
-		// If no tool calls, send the final text response.
+		// If no tool calls, this is the final response.
 		if len(resp.ToolCalls) == 0 {
-			if resp.Content != "" {
-				a.sendReply(msg, resp.Content)
+			finalContent = strings.TrimSpace(resp.Content)
+			if finalContent != "" {
+				history = append(history, providerPkg.Message{
+					Role:    "assistant",
+					Content: resp.Content,
+				})
 			}
-			// Append assistant message to session.
-			session.Messages = append(session.Messages, providerPkg.Message{
-				Role:    "assistant",
-				Content: resp.Content,
-			})
-			break
+			if sendReply && origin != nil && finalContent != "" && !strings.EqualFold(finalContent, noReplyToken) {
+				a.sendReply(*origin, resp.Content)
+			}
+			return history, finalContent, nil
 		}
 
-		// Append assistant message with tool calls.
-		session.Messages = append(session.Messages, providerPkg.Message{
+		history = append(history, providerPkg.Message{
 			Role:      "assistant",
 			Content:   resp.Content,
 			ToolCalls: resp.ToolCalls,
 		})
 
-		// Execute each tool call and append results.
 		for _, tc := range resp.ToolCalls {
 			slog.Info("agent: executing tool", "tool", tc.Name, "call_id", tc.ID)
 
@@ -170,7 +239,7 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 				content = fmt.Sprintf("Error: %s\n%s", result.Error, content)
 			}
 
-			session.Messages = append(session.Messages, providerPkg.Message{
+			history = append(history, providerPkg.Message{
 				Role:       "tool",
 				Content:    content,
 				ToolCallID: tc.ID,
@@ -180,9 +249,152 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		slog.Debug("agent: tool loop iteration complete", "iteration", iteration+1)
 	}
 
-	// Trim and save session.
-	a.sessions.Trim(session, 100)
-	a.saveSession(session)
+	return history, finalContent, nil
+}
+
+func (a *AgentLoop) runCompactionIfNeeded(
+	ctx context.Context,
+	session *Session,
+	prov providerPkg.Provider,
+	model string,
+	systemPrompt string,
+	toolDefs []providerPkg.ToolDef,
+	now time.Time,
+	isHeartbeat bool,
+) error {
+	if a.memory == nil {
+		return nil
+	}
+
+	estimatedTokens := estimateSessionTokens(session.Messages)
+
+	if !isHeartbeat && a.memory.ShouldFlushBeforeCompaction(estimatedTokens, session) {
+		flushPrompt := a.memory.BuildPreCompactionFlushPrompt(now)
+		flushMessages := CloneMessages(session.Messages)
+		flushMessages = append(flushMessages, providerPkg.Message{
+			Role:    "user",
+			Content: flushPrompt,
+		})
+		flushSystemPrompt := systemPrompt + "\n\nThis is a silent pre-compaction housekeeping turn. Reply with NO_REPLY when done."
+		if _, _, err := a.runToolLoop(ctx, flushMessages, prov, model, flushSystemPrompt, toolDefs, nil, false, 6); err != nil {
+			slog.Warn("agent: pre-compaction memory flush failed", "session_id", session.ID, "error", err)
+		} else {
+			count := session.CompactionCount
+			session.MemoryFlushCompactionCount = &count
+		}
+	}
+
+	if !(a.memory.ShouldCompactByTokens(estimatedTokens) || a.memory.ShouldCompact(len(session.Messages))) {
+		return nil
+	}
+
+	keep := a.memory.KeepRecentMessages()
+	if keep >= len(session.Messages) {
+		return nil
+	}
+	summarized := session.Messages[:len(session.Messages)-keep]
+	recent := session.Messages[len(session.Messages)-keep:]
+
+	summary, err := a.generateCompactionSummary(ctx, prov, model, summarized, systemPrompt)
+	if err != nil {
+		return err
+	}
+
+	compactionMsg := providerPkg.Message{
+		Role:    "assistant",
+		Content: "[COMPACTION SUMMARY]\n" + summary,
+	}
+	next := make([]providerPkg.Message, 0, 1+len(recent))
+	next = append(next, compactionMsg)
+	next = append(next, recent...)
+	session.Messages = next
+	session.CompactionCount++
+
+	if err := a.memory.RecordCompaction(session.ID, len(summarized), summary, now); err != nil {
+		slog.Warn("agent: failed to write compaction memory note", "session_id", session.ID, "error", err)
+	}
+
+	return nil
+}
+
+func estimateSessionTokens(messages []providerPkg.Message) int {
+	totalChars := 0
+	for _, m := range messages {
+		totalChars += len(m.Content)
+		totalChars += len(m.Role) + len(m.ToolCallID)
+		for _, tc := range m.ToolCalls {
+			totalChars += len(tc.ID) + len(tc.Name) + len(tc.Arguments)
+		}
+	}
+	// Rough heuristic: ~4 chars/token in mixed English/code text.
+	return totalChars / 4
+}
+
+func (a *AgentLoop) generateCompactionSummary(
+	ctx context.Context,
+	prov providerPkg.Provider,
+	model string,
+	history []providerPkg.Message,
+	systemPrompt string,
+) (string, error) {
+	if len(history) == 0 {
+		return "No prior messages to summarize.", nil
+	}
+
+	req := &providerPkg.ChatRequest{
+		Model:        model,
+		Messages:     history,
+		SystemPrompt: systemPrompt + "\n\n" + a.memory.BuildCompactionPrompt(),
+		MaxTokens:    900,
+	}
+
+	resp, err := prov.ChatCompletion(ctx, req)
+	if err != nil {
+		return "", err
+	}
+
+	summary := strings.TrimSpace(resp.Content)
+	if summary == "" {
+		summary = "Compaction completed (empty summary)."
+	}
+
+	maxChars := a.memory.CompactionSummaryChars()
+	if maxChars > 0 && len(summary) > maxChars {
+		summary = summary[:maxChars]
+	}
+	return summary, nil
+}
+
+func (a *AgentLoop) runBackgroundDigest(ctx context.Context) {
+	ticker := time.NewTicker(a.memory.BackgroundDigestInterval())
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			summaries, err := a.sessions.ListSessions()
+			if err != nil {
+				slog.Warn("agent: background memory digest list failed", "error", err)
+				continue
+			}
+
+			limit := a.memory.BackgroundDigestMaxRuns()
+			for i, s := range summaries {
+				if i >= limit {
+					break
+				}
+				session, err := a.sessions.Load(s.ID)
+				if err != nil {
+					continue
+				}
+				if err := a.memory.DigestSession(session, now, "background"); err != nil {
+					slog.Debug("agent: background digest skipped", "session_id", session.ID, "error", err)
+				}
+			}
+		}
+	}
 }
 
 // sendReply sends a text response back to the originating chat.

@@ -13,10 +13,12 @@ import (
 
 // Session holds conversation history for a channel+chat pair.
 type Session struct {
-	ID       string             `json:"id"`
-	Messages []provider.Message `json:"messages"`
-	Created  time.Time          `json:"created"`
-	Updated  time.Time          `json:"updated"`
+	ID                         string             `json:"id"`
+	Messages                   []provider.Message `json:"messages"`
+	CompactionCount            int                `json:"compaction_count,omitempty"`
+	MemoryFlushCompactionCount *int               `json:"memory_flush_compaction_count,omitempty"`
+	Created                    time.Time          `json:"created"`
+	Updated                    time.Time          `json:"updated"`
 }
 
 // SessionStore manages persistence of sessions to disk.

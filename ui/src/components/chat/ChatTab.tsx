@@ -72,7 +72,7 @@ export function ChatTab({ ws }: ChatTabProps) {
   );
 
   return (
-    <div className="flex h-full flex-row">
+    <div className="flex h-full flex-row bg-[#08090d]">
       <SessionList
         sessions={sessions}
         selectedId={selectedSessionId}

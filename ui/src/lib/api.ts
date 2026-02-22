@@ -1,4 +1,4 @@
-import type { StatusResponse, SessionSummary, Session, Skill, ChannelConfig } from "@/types";
+import type { StatusResponse, SessionSummary, Session, Skill, ChannelConfig, MemoryNode } from "@/types";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -49,5 +49,21 @@ export async function putConfig(data: Partial<ChannelConfig>): Promise<{ status:
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
+  });
+}
+
+export async function getMemoryTree(): Promise<MemoryNode> {
+  return request("/api/memory");
+}
+
+export async function getMemoryFile(path: string): Promise<{ path: string; content: string }> {
+  return request(`/api/memory/${path}`);
+}
+
+export async function putMemoryFile(path: string, content: string): Promise<void> {
+  return request(`/api/memory/${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
   });
 }

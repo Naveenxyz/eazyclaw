@@ -9,6 +9,41 @@ import (
 	"strings"
 )
 
+var reservedMemoryRootFiles = map[string]struct{}{
+	"AGENTS.md":    {},
+	"SOUL.md":      {},
+	"IDENTITY.md":  {},
+	"USER.md":      {},
+	"HEARTBEAT.md": {},
+	"MEMORY.md":    {},
+}
+
+func guardReservedMemoryRootPath(absPath, workspaceDir string) error {
+	rel, err := filepath.Rel(workspaceDir, absPath)
+	if err != nil {
+		return nil
+	}
+	rel = filepath.Clean(rel)
+	if strings.HasPrefix(rel, "..") {
+		return nil
+	}
+	if strings.Contains(rel, string(filepath.Separator)) {
+		return nil
+	}
+	base := filepath.Base(rel)
+	for name := range reservedMemoryRootFiles {
+		if strings.EqualFold(base, name) {
+			memoryPath := filepath.Join(filepath.Dir(workspaceDir), "memory", name)
+			return fmt.Errorf(
+				"%s is a reserved memory file; use memory_read/memory_write on %s instead of workspace file tools",
+				name,
+				memoryPath,
+			)
+		}
+	}
+	return nil
+}
+
 // validatePath resolves a path and ensures it is within the workspace directory.
 func validatePath(path, workspaceDir string) (string, error) {
 	if !filepath.IsAbs(path) {
@@ -39,7 +74,7 @@ func NewReadFileTool(workspaceDir string) *ReadFileTool {
 }
 
 func (t *ReadFileTool) Name() string        { return "read_file" }
-func (t *ReadFileTool) Description() string  { return "Read the contents of a file" }
+func (t *ReadFileTool) Description() string { return "Read the contents of a file" }
 func (t *ReadFileTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
@@ -64,6 +99,9 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (*Resu
 
 	absPath, err := validatePath(params.Path, t.workspaceDir)
 	if err != nil {
+		return &Result{Error: err.Error(), IsError: true}, nil
+	}
+	if err := guardReservedMemoryRootPath(absPath, t.workspaceDir); err != nil {
 		return &Result{Error: err.Error(), IsError: true}, nil
 	}
 
@@ -108,7 +146,7 @@ func NewWriteFileTool(workspaceDir string) *WriteFileTool {
 }
 
 func (t *WriteFileTool) Name() string        { return "write_file" }
-func (t *WriteFileTool) Description() string  { return "Write content to a file" }
+func (t *WriteFileTool) Description() string { return "Write content to a file" }
 func (t *WriteFileTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
@@ -131,6 +169,9 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (*Res
 
 	absPath, err := validatePath(params.Path, t.workspaceDir)
 	if err != nil {
+		return &Result{Error: err.Error(), IsError: true}, nil
+	}
+	if err := guardReservedMemoryRootPath(absPath, t.workspaceDir); err != nil {
 		return &Result{Error: err.Error(), IsError: true}, nil
 	}
 
@@ -160,7 +201,7 @@ func NewEditFileTool(workspaceDir string) *EditFileTool {
 }
 
 func (t *EditFileTool) Name() string        { return "edit_file" }
-func (t *EditFileTool) Description() string  { return "Edit a file by replacing a string" }
+func (t *EditFileTool) Description() string { return "Edit a file by replacing a string" }
 func (t *EditFileTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
@@ -185,6 +226,9 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (*Resu
 
 	absPath, err := validatePath(params.Path, t.workspaceDir)
 	if err != nil {
+		return &Result{Error: err.Error(), IsError: true}, nil
+	}
+	if err := guardReservedMemoryRootPath(absPath, t.workspaceDir); err != nil {
 		return &Result{Error: err.Error(), IsError: true}, nil
 	}
 
@@ -219,7 +263,7 @@ func NewListDirTool(workspaceDir string) *ListDirTool {
 }
 
 func (t *ListDirTool) Name() string        { return "list_dir" }
-func (t *ListDirTool) Description() string  { return "List directory contents" }
+func (t *ListDirTool) Description() string { return "List directory contents" }
 func (t *ListDirTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",

@@ -16,7 +16,7 @@ type TokenStore struct {
 }
 
 // NewTokenStore creates a new token store. basePath is the directory
-// where token files are stored (e.g., "/data/auth/").
+// where token files are stored (e.g., "/data/eazyclaw/auth/").
 func NewTokenStore(basePath string) *TokenStore {
 	return &TokenStore{basePath: basePath}
 }

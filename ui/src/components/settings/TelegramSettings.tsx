@@ -61,18 +61,18 @@ export function TelegramSettings({ config, onChange }: TelegramSettingsProps) {
   };
 
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-5">
-      <h2 className="mb-4 text-lg font-semibold text-violet-400">Telegram</h2>
+    <div className="glass-card rounded-lg border border-violet-500/10 bg-[#0f1117] p-5">
+      <h2 className="mb-4 text-lg font-semibold text-slate-200">Telegram</h2>
 
       {/* Group Policy */}
       <div className="mb-4">
-        <label className="mb-1 block text-xs font-medium uppercase tracking-wider text-zinc-500">
+        <label className="mb-1 block text-sm font-medium text-slate-400">
           Group Policy
         </label>
         <select
           value={config.group_policy}
           onChange={(e) => updateConfig({ group_policy: e.target.value as TelegramChannelConfig["group_policy"] })}
-          className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
+          className="w-full rounded-lg border border-violet-500/10 bg-[#0f1117] px-3 py-2 text-sm text-slate-200 focus:border-violet-500/30 focus:ring-1 focus:ring-violet-500/20"
         >
           <option value="allowlist">allowlist</option>
           <option value="open">open</option>
@@ -81,7 +81,7 @@ export function TelegramSettings({ config, onChange }: TelegramSettingsProps) {
 
       {/* DM Policy */}
       <div className="mb-4">
-        <label className="mb-1 block text-xs font-medium uppercase tracking-wider text-zinc-500">
+        <label className="mb-1 block text-sm font-medium text-slate-400">
           DM Policy
         </label>
         <select
@@ -89,7 +89,7 @@ export function TelegramSettings({ config, onChange }: TelegramSettingsProps) {
           onChange={(e) =>
             updateConfig({ dm: { ...config.dm, policy: e.target.value as TelegramChannelConfig["dm"]["policy"] } })
           }
-          className="w-full rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100"
+          className="w-full rounded-lg border border-violet-500/10 bg-[#0f1117] px-3 py-2 text-sm text-slate-200 focus:border-violet-500/30 focus:ring-1 focus:ring-violet-500/20"
         >
           <option value="allow">allow</option>
           <option value="deny">deny</option>
@@ -98,19 +98,19 @@ export function TelegramSettings({ config, onChange }: TelegramSettingsProps) {
 
       {/* Allowed Users */}
       <div className="mb-4">
-        <label className="mb-1 block text-xs font-medium uppercase tracking-wider text-zinc-500">
+        <label className="mb-1 block text-sm font-medium text-slate-400">
           Allowed Users
         </label>
         <div className="mb-2 flex flex-wrap gap-2">
           {config.allowed_users.map((user) => (
             <span
               key={user}
-              className="inline-flex items-center gap-1 rounded-full bg-zinc-800 px-3 py-1 text-xs text-zinc-300"
+              className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 border border-violet-500/20 px-3 py-1 text-xs text-slate-300"
             >
               {user}
               <button
                 onClick={() => removeUser(user)}
-                className="ml-1 text-zinc-500 hover:text-red-400"
+                className="ml-1 text-slate-500 hover:text-red-400"
               >
                 x
               </button>
@@ -124,11 +124,11 @@ export function TelegramSettings({ config, onChange }: TelegramSettingsProps) {
             onChange={(e) => setNewUser(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addUser()}
             placeholder="Add user..."
-            className="flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600"
+            className="flex-1 rounded-lg border border-violet-500/10 bg-[#0f1117] px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:border-violet-500/30 focus:ring-1 focus:ring-violet-500/20"
           />
           <button
             onClick={addUser}
-            className="rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-500"
+            className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500"
           >
             Add
           </button>
@@ -137,16 +137,16 @@ export function TelegramSettings({ config, onChange }: TelegramSettingsProps) {
 
       {/* Allowed Chats */}
       <div>
-        <label className="mb-2 block text-xs font-medium uppercase tracking-wider text-zinc-500">
+        <label className="mb-2 block text-sm font-medium text-slate-400">
           Allowed Chats
         </label>
 
         {Object.entries(allowedChats).map(([chatId, chat]) => (
           <div
             key={chatId}
-            className="mb-2 flex items-center gap-3 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2"
+            className="mb-2 flex items-center gap-3 rounded-lg border border-white/5 bg-[#151720] px-3 py-2"
           >
-            <span className="flex-1 text-sm text-zinc-300">{chatId}</span>
+            <span className="flex-1 text-sm font-mono text-slate-300">{chatId}</span>
             <label className="flex items-center gap-1">
               <input
                 type="checkbox"
@@ -154,9 +154,9 @@ export function TelegramSettings({ config, onChange }: TelegramSettingsProps) {
                 onChange={(e) =>
                   updateChat(chatId, { allow: e.target.checked })
                 }
-                className="rounded border-zinc-700"
+                className="rounded border-violet-500/20"
               />
-              <span className="text-xs text-zinc-400">Allow</span>
+              <span className="text-xs text-slate-400">Allow</span>
             </label>
             <label className="flex items-center gap-1">
               <input
@@ -165,9 +165,9 @@ export function TelegramSettings({ config, onChange }: TelegramSettingsProps) {
                 onChange={(e) =>
                   updateChat(chatId, { require_mention: e.target.checked })
                 }
-                className="rounded border-zinc-700"
+                className="rounded border-violet-500/20"
               />
-              <span className="text-xs text-zinc-400">Require Mention</span>
+              <span className="text-xs text-slate-400">Require Mention</span>
             </label>
             <button
               onClick={() => removeChat(chatId)}
@@ -185,11 +185,11 @@ export function TelegramSettings({ config, onChange }: TelegramSettingsProps) {
             onChange={(e) => setNewChatId(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addChat()}
             placeholder="Chat ID..."
-            className="flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600"
+            className="flex-1 rounded-lg border border-violet-500/10 bg-[#0f1117] px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:border-violet-500/30 focus:ring-1 focus:ring-violet-500/20"
           />
           <button
             onClick={addChat}
-            className="rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-500"
+            className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500"
           >
             Add Chat
           </button>

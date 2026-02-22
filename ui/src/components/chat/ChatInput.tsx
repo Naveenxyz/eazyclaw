@@ -26,8 +26,8 @@ export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
   );
 
   return (
-    <div className="border-t border-zinc-800 bg-zinc-900 p-4">
-      <div className="mx-auto flex max-w-3xl items-center gap-2">
+    <div className="p-4">
+      <div className="glass-card mx-auto flex max-w-3xl items-center gap-2 rounded-lg border border-violet-500/10 bg-[#0f1117]/80 px-4 py-3 backdrop-blur-sm">
         <input
           type="text"
           value={value}
@@ -35,12 +35,12 @@ export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
           onKeyDown={handleKeyDown}
           disabled={disabled}
           placeholder="Type a message..."
-          className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm text-zinc-200 placeholder-zinc-500 outline-none focus:border-violet-600 focus:ring-1 focus:ring-violet-600 disabled:opacity-50"
+          className="flex-1 bg-transparent px-2 py-1 text-sm text-slate-200 placeholder-slate-500 outline-none focus:ring-1 focus:ring-violet-500/50 rounded disabled:opacity-50"
         />
         <button
           onClick={handleSend}
           disabled={disabled || !value.trim()}
-          className="rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:hover:bg-violet-600"
+          className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-50 disabled:hover:bg-violet-600"
         >
           Send
         </button>

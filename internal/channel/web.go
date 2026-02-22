@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +56,9 @@ type WebChannel struct {
 
 	// Embedded frontend filesystem.
 	frontendFS fs.FS
+
+	// Memory explorer directory.
+	memoryDir string
 }
 
 // NewWebChannel creates a new WebChannel.
@@ -92,6 +97,11 @@ func (w *WebChannel) SetFrontendFS(fsys fs.FS) {
 	w.frontendFS = fsys
 }
 
+// SetMemoryDir sets the memory directory path for the memory explorer API.
+func (w *WebChannel) SetMemoryDir(dir string) {
+	w.memoryDir = dir
+}
+
 // Name returns the channel identifier.
 func (w *WebChannel) Name() string { return "web" }
 
@@ -111,6 +121,8 @@ func (w *WebChannel) Start(ctx context.Context, b *bus.Bus) error {
 	mux.Handle("/api/sessions/", w.authMiddleware(http.HandlerFunc(w.handleSessionDetail)))
 	mux.Handle("/api/skills", w.authMiddleware(http.HandlerFunc(w.handleSkills)))
 	mux.Handle("/api/config", w.authMiddleware(http.HandlerFunc(w.handleConfig)))
+	mux.Handle("/api/memory/", w.authMiddleware(http.HandlerFunc(w.handleMemoryPath)))
+	mux.Handle("/api/memory", w.authMiddleware(http.HandlerFunc(w.handleMemoryList)))
 
 	// SPA handler: serve frontend assets or fall back to index.html.
 	mux.HandleFunc("/", w.handleSPA)
@@ -572,6 +584,139 @@ func (w *WebChannel) handleConfigPut(rw http.ResponseWriter, r *http.Request) {
 		"status":  "ok",
 		"message": "Config saved. Restart container to apply changes.",
 	})
+}
+
+// --- Memory Explorer API ---
+
+// memoryNode represents a file or directory in the memory tree.
+type memoryNode struct {
+	Name     string       `json:"name"`
+	Path     string       `json:"path"`
+	Type     string       `json:"type"` // "file" or "dir"
+	Children []memoryNode `json:"children,omitempty"`
+}
+
+// handleMemoryList returns a JSON tree of all files in the memory directory.
+func (w *WebChannel) handleMemoryList(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if w.memoryDir == "" {
+		http.Error(rw, "memory directory not configured", http.StatusInternalServerError)
+		return
+	}
+
+	root := memoryNode{Name: "memory", Path: "", Type: "dir"}
+	root.Children = buildMemoryTree(w.memoryDir, "")
+
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(root)
+}
+
+// buildMemoryTree recursively builds a tree of files and directories.
+func buildMemoryTree(baseDir, relPath string) []memoryNode {
+	absDir := filepath.Join(baseDir, relPath)
+	entries, err := os.ReadDir(absDir)
+	if err != nil {
+		return nil
+	}
+
+	var nodes []memoryNode
+	for _, entry := range entries {
+		entryRel := filepath.Join(relPath, entry.Name())
+		node := memoryNode{
+			Name: entry.Name(),
+			Path: entryRel,
+		}
+		if entry.IsDir() {
+			node.Type = "dir"
+			node.Children = buildMemoryTree(baseDir, entryRel)
+		} else {
+			node.Type = "file"
+		}
+		nodes = append(nodes, node)
+	}
+	return nodes
+}
+
+// handleMemoryPath handles GET (read) and PUT (write) for individual memory files.
+func (w *WebChannel) handleMemoryPath(rw http.ResponseWriter, r *http.Request) {
+	if w.memoryDir == "" {
+		http.Error(rw, "memory directory not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Extract path after /api/memory/
+	relPath := strings.TrimPrefix(r.URL.Path, "/api/memory/")
+	if relPath == "" {
+		w.handleMemoryList(rw, r)
+		return
+	}
+
+	// Path traversal protection.
+	if strings.Contains(relPath, "..") {
+		http.Error(rw, "invalid path", http.StatusBadRequest)
+		return
+	}
+
+	absPath := filepath.Join(w.memoryDir, relPath)
+	// Ensure resolved path is still within memoryDir.
+	resolved, err := filepath.Abs(absPath)
+	if err != nil || !strings.HasPrefix(resolved, w.memoryDir) {
+		http.Error(rw, "invalid path", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				http.Error(rw, "file not found", http.StatusNotFound)
+			} else {
+				http.Error(rw, "failed to read file", http.StatusInternalServerError)
+			}
+			return
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(map[string]string{
+			"path":    relPath,
+			"content": string(data),
+		})
+
+	case http.MethodPut:
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
+		if err != nil {
+			http.Error(rw, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			http.Error(rw, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// Create parent directories if needed.
+		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+			http.Error(rw, "failed to create directories", http.StatusInternalServerError)
+			return
+		}
+
+		if err := os.WriteFile(absPath, []byte(payload.Content), 0o644); err != nil {
+			http.Error(rw, "failed to write file", http.StatusInternalServerError)
+			return
+		}
+
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(map[string]string{"status": "ok", "path": relPath})
+
+	default:
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // Ensure WebChannel satisfies the Channel interface at compile time.

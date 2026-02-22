@@ -1,8 +1,8 @@
 # Stage 1: Build frontend
 FROM node:22-bookworm-slim AS ui-builder
 WORKDIR /ui
-COPY ui/package.json ui/package-lock.json ./
-RUN npm ci
+COPY ui/package.json ./
+RUN npm install
 COPY ui/ .
 RUN npm run build
 
@@ -41,6 +41,7 @@ ENV PATH="/data/npm/global/bin:/data/uv/bin:$PATH"
 
 COPY --from=builder /eazyclaw /usr/local/bin/eazyclaw
 COPY config.example.yaml /etc/eazyclaw/config.example.yaml
+COPY AGENTS.md SOUL.md BOOTSTRAP.md IDENTITY.md USER.md HEARTBEAT.md MEMORY.md /defaults/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

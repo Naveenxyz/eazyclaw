@@ -1,12 +1,13 @@
 import { useState } from "react";
-import Header from "@/components/layout/Header";
+import IconRail from "@/components/layout/IconRail";
 import { ChatTab } from "@/components/chat/ChatTab";
+import MemoryTab from "@/components/memory/MemoryTab";
 import SkillsTab from "@/components/skills/SkillsTab";
 import StatusTab from "@/components/status/StatusTab";
 import SettingsTab from "@/components/settings/SettingsTab";
 import { useWebSocket } from "@/hooks/use-websocket";
 
-const TABS = ["Chat", "Skills", "Status", "Settings"] as const;
+const TABS = ["Chat", "Memory", "Skills", "Status", "Settings"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function DashboardPage() {
@@ -17,6 +18,8 @@ export default function DashboardPage() {
     switch (activeTab) {
       case "Chat":
         return <ChatTab ws={ws} />;
+      case "Memory":
+        return <MemoryTab />;
       case "Skills":
         return <SkillsTab />;
       case "Status":
@@ -27,13 +30,13 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="flex h-screen flex-col bg-zinc-950">
-      <Header
-        connected={ws.connected}
+    <div className="grid grid-cols-[56px_1fr] h-screen bg-[#08090d]">
+      <IconRail
         activeTab={activeTab}
         onTabChange={(tab) => setActiveTab(tab as Tab)}
+        isConnected={ws.connected}
       />
-      <main className="flex-1 overflow-hidden">{renderTab()}</main>
+      <main className="overflow-hidden">{renderTab()}</main>
     </div>
   );
 }

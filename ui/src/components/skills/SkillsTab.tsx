@@ -24,15 +24,15 @@ export default function SkillsTab() {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-zinc-500">Loading skills...</p>
+      <div className="flex h-full items-center justify-center bg-[#08090d]">
+        <p className="text-sm font-mono text-slate-500">Loading skills...</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full items-center justify-center bg-[#08090d]">
         <p className="text-sm text-red-400">{error}</p>
       </div>
     );
@@ -40,20 +40,15 @@ export default function SkillsTab() {
 
   if (skills.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-zinc-500">No skills loaded</p>
+      <div className="flex h-full items-center justify-center bg-[#08090d]">
+        <p className="text-sm font-mono text-slate-500">No skills loaded</p>
       </div>
     );
   }
 
   return (
-    <div className="p-6">
-      <div
-        className="grid gap-4"
-        style={{
-          gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))",
-        }}
-      >
+    <div className="p-6 bg-[#08090d]">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 fade-in-stagger">
         {skills.map((skill) => (
           <SkillCard key={skill.name} skill={skill} />
         ))}

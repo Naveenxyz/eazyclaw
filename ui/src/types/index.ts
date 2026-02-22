@@ -100,3 +100,10 @@ export interface WSMessage {
   role?: string;
   content?: string;
 }
+
+export interface MemoryNode {
+  name: string;
+  path: string;
+  type: 'file' | 'dir';
+  children?: MemoryNode[];
+}

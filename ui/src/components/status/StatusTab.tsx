@@ -27,67 +27,59 @@ export default function StatusTab() {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-zinc-500">Loading status...</p>
+      <div className="flex h-full items-center justify-center bg-[#08090d]">
+        <p className="text-sm font-mono text-slate-500">Loading status...</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full items-center justify-center bg-[#08090d]">
         <p className="text-sm text-red-400">{error}</p>
       </div>
     );
   }
 
   return (
-    <div className="p-6">
-      {providers.length > 0 && (
-        <section className="mb-8">
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-zinc-400">
-            Providers
-          </h2>
-          <div
-            className="grid gap-4"
-            style={{
-              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-            }}
-          >
-            {providers.map((name) => (
-              <StatusCard key={name} name={name} detail="active" />
-            ))}
-          </div>
-        </section>
-      )}
+    <div className="p-6 bg-[#08090d]">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        {providers.length > 0 && (
+          <section>
+            <h2 className="mb-4 text-sm font-mono font-semibold uppercase tracking-wider text-slate-400">
+              Providers
+            </h2>
+            <div className="flex flex-col gap-4">
+              {providers.map((name) => (
+                <StatusCard key={name} name={name} detail="active" />
+              ))}
+            </div>
+          </section>
+        )}
 
-      {channels.length > 0 && (
-        <section className="mb-8">
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-zinc-400">
-            Channels
-          </h2>
-          <div
-            className="grid gap-4"
-            style={{
-              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-            }}
-          >
-            {channels.map((name) => (
-              <StatusCard key={name} name={name} detail="active" />
-            ))}
-          </div>
-        </section>
-      )}
+        {channels.length > 0 && (
+          <section>
+            <h2 className="mb-4 text-sm font-mono font-semibold uppercase tracking-wider text-slate-400">
+              Channels
+            </h2>
+            <div className="flex flex-col gap-4">
+              {channels.map((name) => (
+                <StatusCard key={name} name={name} detail="active" />
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
 
-      <section>
-        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-zinc-400">
+      <section className="mt-8">
+        <h2 className="mb-4 text-sm font-mono font-semibold uppercase tracking-wider text-slate-400">
           Sessions
         </h2>
-        <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-          <span className="text-2xl font-bold text-zinc-100">
+        <div className="glass-card rounded-lg border border-violet-500/10 bg-[#0f1117] p-4">
+          <span className="text-2xl font-mono font-bold text-slate-200">
             {sessionCount}
           </span>
-          <span className="ml-2 text-sm text-zinc-400">active sessions</span>
+          <span className="ml-2 text-sm text-slate-400">active sessions</span>
         </div>
       </section>
     </div>

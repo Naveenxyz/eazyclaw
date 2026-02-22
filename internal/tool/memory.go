@@ -6,8 +6,45 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+var userProfileMemoryPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?im)^-\s*name\s*:`),
+	regexp.MustCompile(`(?im)^-\s*preferred name\s*:`),
+	regexp.MustCompile(`(?im)^-\s*timezone\s*:`),
+	regexp.MustCompile(`(?i)\bmy name is\b`),
+	regexp.MustCompile(`(?i)\bcall me\b`),
+	regexp.MustCompile(`(?i)\btimezone is\b`),
+}
+
+func normalizeMemoryPath(path string) string {
+	p := strings.TrimSpace(path)
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = strings.TrimPrefix(p, "./")
+	return p
+}
+
+func looksLikeUserProfileContent(content string) bool {
+	for _, re := range userProfileMemoryPatterns {
+		if re.MatchString(content) {
+			return true
+		}
+	}
+	return false
+}
+
+func routeMemoryWritePath(path, content string) (string, bool) {
+	normalized := normalizeMemoryPath(path)
+	base := strings.ToUpper(filepath.Base(normalized))
+	if looksLikeUserProfileContent(content) {
+		if base == "MEMORY.MD" || strings.HasPrefix(base, "20") {
+			return "USER.md", true
+		}
+	}
+	return normalized, false
+}
 
 // --- MemoryReadTool ---
 
@@ -22,7 +59,7 @@ func NewMemoryReadTool(dataDir string) *MemoryReadTool {
 }
 
 func (t *MemoryReadTool) Name() string        { return "memory_read" }
-func (t *MemoryReadTool) Description() string  { return "Read a file from the memory directory" }
+func (t *MemoryReadTool) Description() string { return "Read a file from the memory directory" }
 func (t *MemoryReadTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
@@ -66,8 +103,10 @@ func NewMemoryWriteTool(dataDir string) *MemoryWriteTool {
 	return &MemoryWriteTool{memoryDir: filepath.Join(dataDir, "memory")}
 }
 
-func (t *MemoryWriteTool) Name() string        { return "memory_write" }
-func (t *MemoryWriteTool) Description() string  { return "Write or append to a file in the memory directory" }
+func (t *MemoryWriteTool) Name() string { return "memory_write" }
+func (t *MemoryWriteTool) Description() string {
+	return "Write or append to a file in the memory directory"
+}
 func (t *MemoryWriteTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
@@ -90,7 +129,8 @@ func (t *MemoryWriteTool) Execute(ctx context.Context, args json.RawMessage) (*R
 		return &Result{Error: fmt.Sprintf("invalid arguments: %v", err), IsError: true}, nil
 	}
 
-	absPath, err := validatePath(params.Path, t.memoryDir)
+	targetPath, rerouted := routeMemoryWritePath(params.Path, params.Content)
+	absPath, err := validatePath(targetPath, t.memoryDir)
 	if err != nil {
 		return &Result{Error: err.Error(), IsError: true}, nil
 	}
@@ -120,6 +160,11 @@ func (t *MemoryWriteTool) Execute(ctx context.Context, args json.RawMessage) (*R
 	if params.Append {
 		action = "appended"
 	}
+	if rerouted {
+		return &Result{
+			Content: fmt.Sprintf("%s %d bytes to %s (routed from %s: profile facts belong in USER.md)", action, len(params.Content), absPath, params.Path),
+		}, nil
+	}
 	return &Result{Content: fmt.Sprintf("%s %d bytes to %s", action, len(params.Content), absPath)}, nil
 }
 
@@ -135,8 +180,10 @@ func NewMemorySearchTool(dataDir string) *MemorySearchTool {
 	return &MemorySearchTool{memoryDir: filepath.Join(dataDir, "memory")}
 }
 
-func (t *MemorySearchTool) Name() string        { return "memory_search" }
-func (t *MemorySearchTool) Description() string  { return "Search through memory files for matching content" }
+func (t *MemorySearchTool) Name() string { return "memory_search" }
+func (t *MemorySearchTool) Description() string {
+	return "Search through memory files for matching content"
+}
 func (t *MemorySearchTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
