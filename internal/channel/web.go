@@ -165,7 +165,7 @@ func (w *WebChannel) Start(ctx context.Context, b *bus.Bus) error {
 
 	// Authenticated routes.
 	mux.Handle("/ws", w.authMiddleware(http.HandlerFunc(w.handleWS)))
-	mux.Handle("/api/status", w.authMiddleware(http.HandlerFunc(w.handleStatus)))
+	mux.HandleFunc("/api/status", w.handleStatus) // Unauthenticated — used as healthcheck endpoint
 	mux.Handle("/api/sessions", w.authMiddleware(http.HandlerFunc(w.handleSessions)))
 	mux.Handle("/api/sessions/", w.authMiddleware(http.HandlerFunc(w.handleSessionDetail)))
 	mux.Handle("/api/skills", w.authMiddleware(http.HandlerFunc(w.handleSkills)))
