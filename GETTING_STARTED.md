@@ -45,40 +45,57 @@ This lets your agent run `gh` commands — create repos, open PRs, manage issues
 
 ## Step 4: Deploy to Railway
 
-### Fork and connect
+Two options — **CLI** (fastest) or **Dashboard** (no install needed).
+
+### Option A: Railway CLI (Recommended)
+
+```bash
+# Install Railway CLI (if you haven't)
+npm install -g @railway/cli
+
+# Login
+railway login
+
+# Clone and enter the repo
+git clone https://github.com/Naveenxyz/eazyclaw.git
+cd eazyclaw
+
+# Create project + service
+railway init --name eazyclaw
+railway add --service eazyclaw
+railway service link eazyclaw
+
+# Set environment variables
+railway variable set KIMI_API_KEY=sk-kimi-your-key-here
+railway variable set TELEGRAM_BOT_TOKEN=your-token-here
+railway variable set WEB_PASSWORD=pick-a-password
+railway variable set GH_TOKEN=github_pat_your-token-here
+
+# Add persistent volume
+railway volume add --mount-path /data
+
+# Deploy
+railway up
+
+# Generate a public URL
+railway domain
+```
+
+That's it. Your dashboard URL will be printed at the end.
+
+### Option B: Railway Dashboard
 
 1. Fork this repo on GitHub
 2. Go to [railway.app](https://railway.app) and create a new project
 3. Choose **Deploy from GitHub repo** and select your fork
-
-### Add environment variables
-
-In your Railway service, go to **Variables** and add:
-
-```
-KIMI_API_KEY=sk-kimi-your-key-here
-TELEGRAM_BOT_TOKEN=8362090283:your-token-here
-WEB_PASSWORD=pick-a-password
-GH_TOKEN=github_pat_your-token-here
-```
-
-### Add a volume
-
-1. In your Railway service, go to **Settings** → **Volumes**
-2. Add a volume mounted at `/data`
-3. This stores your agent's memory, sessions, and config across restarts
-
-### Deploy
-
-Railway will build and deploy automatically. Wait for the build to finish (~2-3 minutes).
-
-### Set up GitHub CLI auth (one-time)
-
-After the container is running, open Railway's terminal or run:
-
-```bash
-railway run sh -lc 'echo "$GH_TOKEN" | gh auth login --with-token'
-```
+4. Go to **Variables** and add:
+   - `KIMI_API_KEY` — your Kimi key
+   - `TELEGRAM_BOT_TOKEN` — from BotFather
+   - `WEB_PASSWORD` — pick anything
+   - `GH_TOKEN` — your GitHub token
+5. Go to **Settings** → **Volumes** → add a volume at `/data`
+6. Go to **Settings** → **Networking** → **Generate Domain**
+7. Wait for the build to finish (~3 minutes)
 
 ## Step 5: Start Chatting
 
