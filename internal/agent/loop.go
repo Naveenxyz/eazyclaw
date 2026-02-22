@@ -264,14 +264,15 @@ func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, 
 
 	// Run compaction.
 	keep := a.memory.KeepRecentMessages()
-	if keep >= len(session.Messages) {
+	splitIdx := findTurnBoundarySplit(session.Messages, keep)
+	if splitIdx <= 0 {
 		a.sendReply(msg, fmt.Sprintf("Session only has %d messages (keep_recent=%d) — nothing to compact.", len(session.Messages), keep))
 		a.saveSession(session)
 		return
 	}
 
-	summarized := session.Messages[:len(session.Messages)-keep]
-	recent := session.Messages[len(session.Messages)-keep:]
+	summarized := repairToolPairing(session.Messages[:splitIdx])
+	recent := repairToolPairing(session.Messages[splitIdx:])
 
 	compactionPrompt := a.memory.BuildCompactionPrompt()
 	if customInstructions != "" {
@@ -455,11 +456,12 @@ func (a *AgentLoop) runCompactionIfNeeded(
 	}
 
 	keep := a.memory.KeepRecentMessages()
-	if keep >= len(session.Messages) {
+	splitIdx := findTurnBoundarySplit(session.Messages, keep)
+	if splitIdx <= 0 {
 		return nil
 	}
-	summarized := session.Messages[:len(session.Messages)-keep]
-	recent := session.Messages[len(session.Messages)-keep:]
+	summarized := repairToolPairing(session.Messages[:splitIdx])
+	recent := repairToolPairing(session.Messages[splitIdx:])
 
 	summary, err := a.generateCompactionSummary(ctx, prov, model, summarized, systemPrompt)
 	if err != nil {
@@ -550,6 +552,109 @@ func buildRuntimeSnapshotPrompt(
 	}
 	sb.WriteString("- Estimates are approximate; use them for planning only\n")
 	return sb.String()
+}
+
+// findTurnBoundarySplit finds a split index that lands on a turn boundary
+// (before a "user" message) so we never cut in the middle of a tool-call
+// sequence. It tries to keep at least `keep` messages in the recent half.
+// Returns 0 if no valid split is found.
+func findTurnBoundarySplit(messages []providerPkg.Message, keep int) int {
+	if keep >= len(messages) {
+		return 0
+	}
+	// Start from the naive split point and scan backward to find a user message.
+	candidate := len(messages) - keep
+	for i := candidate; i > 0; i-- {
+		if messages[i].Role == "user" {
+			return i
+		}
+	}
+	// No user message found scanning backward; try scanning forward.
+	for i := candidate + 1; i < len(messages); i++ {
+		if messages[i].Role == "user" {
+			return i
+		}
+	}
+	return 0
+}
+
+// repairToolPairing ensures tool_use/tool_result consistency in a message
+// slice after splitting. It removes orphaned tool-role messages whose
+// tool_call_id has no matching assistant tool_call, and adds synthetic error
+// results for assistant tool_calls with no matching tool response.
+func repairToolPairing(messages []providerPkg.Message) []providerPkg.Message {
+	// Collect all tool_call IDs from assistant messages.
+	toolCallIDs := make(map[string]bool)
+	for _, m := range messages {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				toolCallIDs[tc.ID] = true
+			}
+		}
+	}
+
+	// Collect all tool_call IDs that have a tool response.
+	respondedIDs := make(map[string]bool)
+	for _, m := range messages {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			respondedIDs[m.ToolCallID] = true
+		}
+	}
+
+	// Remove orphaned tool messages (no matching tool_call in this slice).
+	out := make([]providerPkg.Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == "tool" && m.ToolCallID != "" && !toolCallIDs[m.ToolCallID] {
+			continue // orphaned tool result
+		}
+		out = append(out, m)
+	}
+
+	// Add synthetic error results for tool_calls missing a response.
+	for _, m := range out {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if !respondedIDs[tc.ID] {
+				out = append(out, providerPkg.Message{
+					Role:       "tool",
+					Content:    "Error: tool result unavailable (lost during compaction)",
+					ToolCallID: tc.ID,
+				})
+			}
+		}
+	}
+
+	// Re-order: synthetic tool results need to be right after their assistant message.
+	// Simple approach: rebuild with correct ordering.
+	result := make([]providerPkg.Message, 0, len(out))
+	syntheticByID := make(map[string]providerPkg.Message)
+	originals := make([]providerPkg.Message, 0, len(out))
+
+	for _, m := range out {
+		if m.Role == "tool" && m.Content == "Error: tool result unavailable (lost during compaction)" {
+			syntheticByID[m.ToolCallID] = m
+		} else {
+			originals = append(originals, m)
+		}
+	}
+
+	if len(syntheticByID) == 0 {
+		return originals
+	}
+
+	for _, m := range originals {
+		result = append(result, m)
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			for _, tc := range m.ToolCalls {
+				if syn, ok := syntheticByID[tc.ID]; ok {
+					result = append(result, syn)
+				}
+			}
+		}
+	}
+	return result
 }
 
 func (a *AgentLoop) generateCompactionSummary(
