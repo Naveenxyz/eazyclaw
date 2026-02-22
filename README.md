@@ -35,14 +35,13 @@ EazyClaw is built as a small, pragmatic gateway with clean boundaries:
 Built now:
 - Multi-provider model routing
 - Telegram/Discord/Web channels
-- WhatsApp bridge support (QR-based onboarding)
 - Persistent sessions + memory model
 - Cron and heartbeat runners
 - Docker-first deployment path
 
 Working toward:
+- WhatsApp bridge support (QR-based onboarding)
 - rock-solid one-command deploy templates (especially Railway)
-- even smoother WhatsApp onboarding and health visibility
 - stronger safety defaults and test coverage
 - minimal-ops deployment with clear guardrails
 - a great personal-agent experience without platform lock-in
