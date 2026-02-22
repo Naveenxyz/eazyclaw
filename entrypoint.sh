@@ -9,7 +9,7 @@ if [ -n "${PORT:-}" ] && [ -z "${WEB_PORT:-}" ]; then
   export WEB_PORT="$PORT"
 fi
 
-mkdir -p "${DATA_ROOT}"/{workspace,sessions,skills,memory,cron,uv/cache,uv/python,uv/tools,uv/bin,npm/cache,npm/global,auth,auth/gh}
+mkdir -p "${DATA_ROOT}"/{workspace,sessions,skills,memory,cron,whatsapp,uv/cache,uv/python,uv/tools,uv/bin,npm/cache,npm/global,auth,auth/gh,auth/google}
 
 # Ensure Python venv exists on the persistent volume.
 if [ ! -f /data/venv/bin/python ]; then

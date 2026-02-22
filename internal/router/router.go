@@ -30,6 +30,14 @@ func NewRouter(cfg config.ChannelsConfig) *Router {
 		allowed["discord"] = m
 	}
 
+	if len(cfg.WhatsApp.AllowedUsers) > 0 {
+		m := make(map[string]bool, len(cfg.WhatsApp.AllowedUsers))
+		for _, u := range cfg.WhatsApp.AllowedUsers {
+			m[u] = true
+		}
+		allowed["whatsapp"] = m
+	}
+
 	return &Router{
 		allowedUsers: allowed,
 	}

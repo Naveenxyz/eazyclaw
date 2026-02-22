@@ -37,6 +37,13 @@ channels:
       #       allow: true
       #       require_mention: false  # Override guild-level setting
 
+  whatsapp:
+    enabled: false
+    allowed_users: []
+    group_policy: "allowlist"
+    dm:
+      policy: "allow"
+
   telegram:
     allowed_users: []  # empty = allow all
     group_policy: "allowlist"  # "allowlist" or "open"

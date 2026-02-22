@@ -205,6 +205,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	var channels []channelPkg.Channel
 	var discordChannel *channelPkg.DiscordChannel
 	var telegramChannel *channelPkg.TelegramChannel
+	var whatsappChannel *channelPkg.WhatsAppChannel
 
 	if token := os.Getenv("TELEGRAM_BOT_TOKEN"); token != "" {
 		tg := channelPkg.NewTelegramChannel(token, cfg.Channels.Telegram)
@@ -220,6 +221,26 @@ func runServe(cmd *cobra.Command, args []string) error {
 		slog.Info("discord channel enabled")
 	}
 
+	if cfg.Channels.WhatsApp.Enabled || os.Getenv("WHATSAPP_ENABLED") == "true" {
+		waDataDir := filepath.Join(cfg.DataDir, "whatsapp")
+		wa := channelPkg.NewWhatsAppChannel(cfg.Channels.WhatsApp, waDataDir)
+		channels = append(channels, wa)
+		whatsappChannel = wa
+		slog.Info("whatsapp channel enabled")
+	}
+
+	// Register Google tools if credentials are available
+	var googleAuth *tool.GoogleAuth
+	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
+	googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+	if googleClientID != "" && googleClientSecret != "" {
+		redirectURL := fmt.Sprintf("http://localhost:%d/api/google/auth/callback", cfg.Channels.Web.Port)
+		googleAuth = tool.NewGoogleAuth(googleClientID, googleClientSecret, redirectURL, cfg.DataDir)
+		toolReg.Register(tool.NewGmailTool(googleAuth))
+		toolReg.Register(tool.NewCalendarTool(googleAuth))
+		slog.Info("google tools registered (gmail, calendar)")
+	}
+
 	// Web dashboard channel (enabled by default or via config)
 	if cfg.Channels.Web.Enabled || cfg.Channels.Web.Port > 0 {
 		web := channelPkg.NewWebChannel(cfg.Channels.Web.Port, cfg.Channels.Web.Password, sessStore, provReg)
@@ -229,6 +250,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		web.SetMemoryDir(memDir)
 		web.SetDiscordChannel(discordChannel)
 		web.SetTelegramChannel(telegramChannel)
+		web.SetWhatsAppChannel(whatsappChannel)
+		if googleAuth != nil {
+			web.SetGoogleAuth(googleAuth)
+		}
 		web.SetCronManager(cronRunner)
 		web.SetHeartbeatConfig(&cfg.Heartbeat)
 
@@ -364,6 +389,7 @@ func runConfigCheck(cmd *cobra.Command, args []string) error {
 	}{
 		{"Telegram", "TELEGRAM_BOT_TOKEN"},
 		{"Discord", "DISCORD_BOT_TOKEN"},
+		{"WhatsApp", "WHATSAPP_ENABLED"},
 	}
 	for _, c := range channelEnvVars {
 		status := "not configured"
@@ -372,6 +398,15 @@ func runConfigCheck(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("  %-12s %s [%s]\n", c.name+":", status, c.envVar)
 	}
+	fmt.Println()
+
+	// Check Google integration
+	fmt.Println("Integrations:")
+	googleStatus := "not configured"
+	if os.Getenv("GOOGLE_CLIENT_ID") != "" && os.Getenv("GOOGLE_CLIENT_SECRET") != "" {
+		googleStatus = "configured"
+	}
+	fmt.Printf("  %-12s %s [GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET]\n", "Google:", googleStatus)
 
 	return nil
 }

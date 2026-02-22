@@ -78,6 +78,7 @@ type ProviderEntry struct {
 type ChannelsConfig struct {
 	Telegram TelegramChannelConfig `yaml:"telegram" json:"telegram"`
 	Discord  DiscordChannelConfig  `yaml:"discord" json:"discord"`
+	WhatsApp WhatsAppChannelConfig `yaml:"whatsapp" json:"whatsapp"`
 	Web      WebChannelEntry       `yaml:"web" json:"web"`
 }
 
@@ -123,6 +124,19 @@ type TelegramChannelConfig struct {
 	GroupPolicy  string                        `yaml:"group_policy" json:"group_policy"` // "allowlist" | "open"
 	DM           TelegramDMConfig              `yaml:"dm" json:"dm"`
 	AllowedChats map[string]TelegramChatConfig `yaml:"allowed_chats,omitempty" json:"allowed_chats,omitempty"`
+}
+
+// WhatsAppDMConfig holds DM policy for WhatsApp.
+type WhatsAppDMConfig struct {
+	Policy string `yaml:"policy" json:"policy"` // "allow" | "deny"
+}
+
+// WhatsAppChannelConfig holds rich WhatsApp channel settings.
+type WhatsAppChannelConfig struct {
+	Enabled      bool             `yaml:"enabled" envconfig:"WHATSAPP_ENABLED"`
+	AllowedUsers []string         `yaml:"allowed_users" json:"allowed_users"`
+	GroupPolicy  string           `yaml:"group_policy" json:"group_policy"` // "allowlist" | "open"
+	DM           WhatsAppDMConfig `yaml:"dm" json:"dm"`
 }
 
 // WebChannelEntry holds settings for the web dashboard channel.
@@ -216,6 +230,15 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Channels.Telegram.AllowedUsers == nil {
 		cfg.Channels.Telegram.AllowedUsers = []string{}
+	}
+	if cfg.Channels.WhatsApp.GroupPolicy == "" {
+		cfg.Channels.WhatsApp.GroupPolicy = "allowlist"
+	}
+	if cfg.Channels.WhatsApp.DM.Policy == "" {
+		cfg.Channels.WhatsApp.DM.Policy = "allow"
+	}
+	if cfg.Channels.WhatsApp.AllowedUsers == nil {
+		cfg.Channels.WhatsApp.AllowedUsers = []string{}
 	}
 	if cfg.Heartbeat.Interval == 0 {
 		cfg.Heartbeat.Interval = 5 * time.Minute

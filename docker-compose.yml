@@ -2,6 +2,7 @@ services:
   eazyclaw:
     build: .
     ports:
+      - "80:80"
       - "8080:8080"
     volumes:
       - eazyclaw-data:/data
@@ -16,6 +17,9 @@ services:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
       - WEB_PASSWORD=${WEB_PASSWORD}
       - GH_TOKEN=${GH_TOKEN}
+      - WHATSAPP_ENABLED=${WHATSAPP_ENABLED}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "eazyclaw", "health"]

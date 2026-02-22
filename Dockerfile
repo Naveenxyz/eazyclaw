@@ -19,6 +19,7 @@ RUN CGO_ENABLED=0 go build -o /eazyclaw ./cmd/eazyclaw/
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    supervisor nginx \
     ca-certificates curl wget git gh jq tmux tree zip unzip \
     ripgrep fd-find \
     python3 python3-venv \
@@ -54,9 +55,14 @@ COPY --from=builder /eazyclaw /usr/local/bin/eazyclaw
 COPY config.example.yaml /etc/eazyclaw/config.example.yaml
 COPY AGENTS.md SOUL.md BOOTSTRAP.md IDENTITY.md USER.md HEARTBEAT.md MEMORY.md /defaults/
 COPY skills/ /defaults/skills/
+COPY supervisord.conf /etc/supervisor/conf.d/eazyclaw.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN rm -f /etc/nginx/sites-enabled/default
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+EXPOSE 80
 EXPOSE 8080
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["eazyclaw", "serve"]
+CMD ["supervisord", "-n"]

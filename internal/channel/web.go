@@ -77,6 +77,10 @@ type WebChannel struct {
 
 	discord  *DiscordChannel
 	telegram *TelegramChannel
+	whatsapp *WhatsAppChannel
+
+	// Google OAuth for Gmail + Calendar tools.
+	googleAuth *tool.GoogleAuth
 
 	// Monitoring: cron and heartbeat.
 	cronManager     tool.CronManager
@@ -136,6 +140,16 @@ func (w *WebChannel) SetTelegramChannel(ch *TelegramChannel) {
 	w.telegram = ch
 }
 
+// SetWhatsAppChannel sets a live WhatsApp channel reference for admin APIs.
+func (w *WebChannel) SetWhatsAppChannel(ch *WhatsAppChannel) {
+	w.whatsapp = ch
+}
+
+// SetGoogleAuth sets the Google OAuth manager for the OAuth flow APIs.
+func (w *WebChannel) SetGoogleAuth(ga *tool.GoogleAuth) {
+	w.googleAuth = ga
+}
+
 // SetCronManager sets the cron manager for the cron API.
 func (w *WebChannel) SetCronManager(cm tool.CronManager) {
 	w.cronManager = cm
@@ -179,6 +193,20 @@ func (w *WebChannel) Start(ctx context.Context, b *bus.Bus) error {
 	mux.Handle("/api/cron/", w.authMiddleware(http.HandlerFunc(w.handleCronJob)))
 	mux.Handle("/api/cron", w.authMiddleware(http.HandlerFunc(w.handleCron)))
 	mux.Handle("/api/heartbeat", w.authMiddleware(http.HandlerFunc(w.handleHeartbeat)))
+
+	// WhatsApp admin APIs.
+	mux.Handle("/api/whatsapp/status", w.authMiddleware(http.HandlerFunc(w.handleWhatsAppStatus)))
+	mux.Handle("/api/whatsapp/qr", w.authMiddleware(http.HandlerFunc(w.handleWhatsAppQR)))
+	mux.Handle("/api/whatsapp/disconnect", w.authMiddleware(http.HandlerFunc(w.handleWhatsAppDisconnect)))
+	mux.Handle("/api/whatsapp/settings", w.authMiddleware(http.HandlerFunc(w.handleWhatsAppSettings)))
+	mux.Handle("/api/whatsapp/approve", w.authMiddleware(http.HandlerFunc(w.handleWhatsAppApprove)))
+	mux.Handle("/api/whatsapp/reject", w.authMiddleware(http.HandlerFunc(w.handleWhatsAppReject)))
+
+	// Google OAuth APIs.
+	mux.Handle("/api/google/status", w.authMiddleware(http.HandlerFunc(w.handleGoogleStatus)))
+	mux.Handle("/api/google/auth/url", w.authMiddleware(http.HandlerFunc(w.handleGoogleAuthURL)))
+	mux.HandleFunc("/api/google/auth/callback", w.handleGoogleAuthCallback) // No auth — OAuth redirect
+	mux.Handle("/api/google/disconnect", w.authMiddleware(http.HandlerFunc(w.handleGoogleDisconnect)))
 
 	// SPA handler: serve frontend assets or fall back to index.html.
 	mux.HandleFunc("/", w.handleSPA)
@@ -617,6 +645,7 @@ func (w *WebChannel) handleConfigGet(rw http.ResponseWriter, r *http.Request) {
 	type sanitizedConfig struct {
 		Discord  config.DiscordChannelConfig  `json:"discord"`
 		Telegram config.TelegramChannelConfig `json:"telegram"`
+		WhatsApp config.WhatsAppChannelConfig `json:"whatsapp"`
 		Web      struct {
 			Enabled     bool `json:"enabled"`
 			Port        int  `json:"port"`
@@ -627,12 +656,16 @@ func (w *WebChannel) handleConfigGet(rw http.ResponseWriter, r *http.Request) {
 	resp := sanitizedConfig{
 		Discord:  w.channelCfg.Discord,
 		Telegram: w.channelCfg.Telegram,
+		WhatsApp: w.channelCfg.WhatsApp,
 	}
 	if resp.Discord.AllowedUsers == nil {
 		resp.Discord.AllowedUsers = []string{}
 	}
 	if resp.Telegram.AllowedUsers == nil {
 		resp.Telegram.AllowedUsers = []string{}
+	}
+	if resp.WhatsApp.AllowedUsers == nil {
+		resp.WhatsApp.AllowedUsers = []string{}
 	}
 	resp.Web.Enabled = w.channelCfg.Web.Enabled
 	resp.Web.Port = w.channelCfg.Web.Port
@@ -652,6 +685,7 @@ func (w *WebChannel) handleConfigPut(rw http.ResponseWriter, r *http.Request) {
 	var incoming struct {
 		Discord  *config.DiscordChannelConfig  `json:"discord,omitempty"`
 		Telegram *config.TelegramChannelConfig `json:"telegram,omitempty"`
+		WhatsApp *config.WhatsAppChannelConfig `json:"whatsapp,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
 		http.Error(rw, "invalid request body", http.StatusBadRequest)
@@ -689,6 +723,13 @@ func (w *WebChannel) handleConfigPut(rw http.ResponseWriter, r *http.Request) {
 		w.channelCfg.Telegram = *incoming.Telegram
 		if w.telegram != nil {
 			w.telegram.ApplyConfig(*incoming.Telegram)
+		}
+	}
+	if incoming.WhatsApp != nil {
+		channels["whatsapp"] = incoming.WhatsApp
+		w.channelCfg.WhatsApp = *incoming.WhatsApp
+		if w.whatsapp != nil {
+			w.whatsapp.ApplyConfig(*incoming.WhatsApp)
 		}
 	}
 	fullCfg["channels"] = channels
@@ -1263,6 +1304,321 @@ func (w *WebChannel) handleHeartbeat(rw http.ResponseWriter, r *http.Request) {
 	}
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(resp)
+}
+
+// --- WhatsApp Admin API ---
+
+func (w *WebChannel) handleWhatsAppStatus(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	state := channelWhatsAppSnapshot(w.channelCfg, w.whatsapp)
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(state)
+}
+
+func (w *WebChannel) handleWhatsAppQR(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if w.whatsapp == nil {
+		http.Error(rw, "whatsapp not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	qr := w.whatsapp.QRCode()
+	if qr == "" {
+		http.Error(rw, "no QR code available", http.StatusNotFound)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]string{"qr_code": qr})
+}
+
+func (w *WebChannel) handleWhatsAppDisconnect(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if w.whatsapp == nil {
+		http.Error(rw, "whatsapp not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.whatsapp.Disconnect()
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]string{"status": "disconnected"})
+}
+
+func (w *WebChannel) handleWhatsAppSettings(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		AllowedUsers []string `json:"allowed_users,omitempty"`
+		GroupPolicy  string   `json:"group_policy,omitempty"`
+		DMPolicy     string   `json:"dm_policy,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(rw, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if w.channelCfg == nil {
+		http.Error(rw, "channel config unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	// Apply changes to config.
+	if req.AllowedUsers != nil {
+		w.channelCfg.WhatsApp.AllowedUsers = req.AllowedUsers
+	}
+	if req.GroupPolicy != "" {
+		w.channelCfg.WhatsApp.GroupPolicy = req.GroupPolicy
+	}
+	if req.DMPolicy != "" {
+		w.channelCfg.WhatsApp.DM.Policy = req.DMPolicy
+	}
+
+	// Hot-reload to channel.
+	if w.whatsapp != nil {
+		w.whatsapp.ApplyConfig(w.channelCfg.WhatsApp)
+	}
+
+	// Persist to config file.
+	if err := w.persistWhatsAppConfig(); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]string{"status": "ok"})
+}
+
+func (w *WebChannel) handleWhatsAppApprove(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(rw, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	userID := strings.TrimSpace(req.UserID)
+	if userID == "" {
+		http.Error(rw, "user_id required", http.StatusBadRequest)
+		return
+	}
+
+	if w.whatsapp != nil {
+		w.whatsapp.ApproveUser(userID)
+	}
+	if err := w.persistWhatsAppAllowedUser(userID); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	state := channelWhatsAppSnapshot(w.channelCfg, w.whatsapp)
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(state)
+}
+
+func (w *WebChannel) handleWhatsAppReject(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(rw, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	userID := strings.TrimSpace(req.UserID)
+	if userID == "" {
+		http.Error(rw, "user_id required", http.StatusBadRequest)
+		return
+	}
+
+	if w.whatsapp != nil {
+		w.whatsapp.RejectUser(userID)
+	}
+
+	state := channelWhatsAppSnapshot(w.channelCfg, w.whatsapp)
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(state)
+}
+
+func channelWhatsAppSnapshot(cfg *config.ChannelsConfig, ch *WhatsAppChannel) WhatsAppAdminState {
+	if ch != nil {
+		return ch.Snapshot()
+	}
+
+	state := WhatsAppAdminState{
+		AllowedUsers: []string{},
+		Pending:      []WhatsAppPendingApproval{},
+		Status:       "disconnected",
+	}
+	if cfg != nil {
+		state.GroupPolicy = cfg.WhatsApp.GroupPolicy
+		state.DMPolicy = cfg.WhatsApp.DM.Policy
+		if len(cfg.WhatsApp.AllowedUsers) > 0 {
+			state.AllowedUsers = append([]string{}, cfg.WhatsApp.AllowedUsers...)
+		}
+	}
+	return state
+}
+
+func (w *WebChannel) persistWhatsAppConfig() error {
+	if w.configPath == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(w.configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config: %w", err)
+	}
+
+	var fullCfg map[string]any
+	if err := yaml.Unmarshal(data, &fullCfg); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	channels, _ := fullCfg["channels"].(map[string]any)
+	if channels == nil {
+		channels = make(map[string]any)
+	}
+	channels["whatsapp"] = w.channelCfg.WhatsApp
+	fullCfg["channels"] = channels
+
+	out, err := yaml.Marshal(fullCfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	if err := os.WriteFile(w.configPath, out, 0o644); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	return nil
+}
+
+func (w *WebChannel) persistWhatsAppAllowedUser(userID string) error {
+	if w.channelCfg == nil {
+		return fmt.Errorf("channel config unavailable")
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return fmt.Errorf("invalid user id")
+	}
+
+	exists := false
+	for _, u := range w.channelCfg.WhatsApp.AllowedUsers {
+		if strings.TrimSpace(u) == userID {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		w.channelCfg.WhatsApp.AllowedUsers = append(w.channelCfg.WhatsApp.AllowedUsers, userID)
+	}
+
+	return w.persistWhatsAppConfig()
+}
+
+// --- Google OAuth API ---
+
+func (w *WebChannel) handleGoogleStatus(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	authenticated := false
+	if w.googleAuth != nil {
+		authenticated = w.googleAuth.IsAuthenticated()
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]bool{"authenticated": authenticated})
+}
+
+func (w *WebChannel) handleGoogleAuthURL(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if w.googleAuth == nil {
+		http.Error(rw, "google not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	url := w.googleAuth.AuthURL()
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]string{"url": url})
+}
+
+func (w *WebChannel) handleGoogleAuthCallback(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if w.googleAuth == nil {
+		http.Error(rw, "google not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(rw, "missing authorization code", http.StatusBadRequest)
+		return
+	}
+
+	if err := w.googleAuth.HandleCallback(code); err != nil {
+		slog.Error("google oauth callback failed", "error", err)
+		http.Error(rw, "OAuth failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Redirect back to settings page.
+	http.Redirect(rw, r, "/settings", http.StatusFound)
+}
+
+func (w *WebChannel) handleGoogleDisconnect(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if w.googleAuth == nil {
+		http.Error(rw, "google not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := w.googleAuth.Revoke(); err != nil {
+		slog.Error("google disconnect failed", "error", err)
+		http.Error(rw, "disconnect failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]string{"status": "disconnected"})
 }
 
 // Ensure WebChannel satisfies the Channel interface at compile time.

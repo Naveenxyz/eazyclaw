@@ -6,6 +6,8 @@ import type {
   ChannelConfig,
   DiscordAdminState,
   TelegramAdminState,
+  WhatsAppAdminState,
+  GoogleAuthStatus,
   MemoryNode,
   CronJob,
   HeartbeatStatus,
@@ -147,4 +149,59 @@ export async function toggleCronJob(id: string): Promise<{ id: string; enabled: 
 
 export async function getHeartbeatStatus(): Promise<HeartbeatStatus> {
   return request("/api/heartbeat");
+}
+
+// --- WhatsApp API ---
+
+export async function getWhatsAppAdminState(): Promise<WhatsAppAdminState> {
+  return request("/api/whatsapp/status");
+}
+
+export async function getWhatsAppQR(): Promise<string> {
+  const res = await fetch("/api/whatsapp/qr", { credentials: "include" });
+  if (!res.ok) throw new Error("Failed to get QR code");
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+export async function disconnectWhatsApp(): Promise<{ status: string }> {
+  return request("/api/whatsapp/disconnect", { method: "POST" });
+}
+
+export async function updateWhatsAppSettings(data: {
+  allowed_users?: string[];
+  group_policy?: string;
+  dm_policy?: string;
+}): Promise<{ status: string }> {
+  return request("/api/whatsapp/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateWhatsAppApproval(
+  action: "approve" | "reject",
+  userId: string
+): Promise<WhatsAppAdminState> {
+  const endpoint = action === "approve" ? "/api/whatsapp/approve" : "/api/whatsapp/reject";
+  return request(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+// --- Google API ---
+
+export async function getGoogleAuthStatus(): Promise<GoogleAuthStatus> {
+  return request("/api/google/status");
+}
+
+export async function getGoogleAuthURL(): Promise<{ url: string }> {
+  return request("/api/google/auth/url");
+}
+
+export async function disconnectGoogle(): Promise<{ status: string }> {
+  return request("/api/google/disconnect", { method: "POST" });
 }

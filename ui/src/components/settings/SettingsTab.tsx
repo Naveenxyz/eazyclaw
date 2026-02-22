@@ -4,16 +4,27 @@ import {
   getConfig,
   getDiscordAdminState,
   getTelegramAdminState,
+  getWhatsAppAdminState,
+  getGoogleAuthStatus,
+  getGoogleAuthURL,
   putConfig,
   updateDiscordApproval,
   updateTelegramApproval,
+  updateWhatsAppApproval,
+  updateWhatsAppSettings,
+  disconnectWhatsApp,
+  disconnectGoogle,
 } from "@/lib/api";
 import { DiscordSettings } from "@/components/settings/DiscordSettings";
 import { TelegramSettings } from "@/components/settings/TelegramSettings";
+import { WhatsAppSettings } from "@/components/settings/WhatsAppSettings";
+import { GoogleSettings } from "@/components/settings/GoogleSettings";
 import type {
   ChannelConfig,
   DiscordAdminState,
   TelegramAdminState,
+  WhatsAppAdminState,
+  GoogleAuthStatus,
   DiscordChannelConfig,
   TelegramChannelConfig,
 } from "@/types";
@@ -26,8 +37,11 @@ export default function SettingsTab() {
   const [saving, setSaving] = useState(false);
   const [discordAdmin, setDiscordAdmin] = useState<DiscordAdminState | null>(null);
   const [telegramAdmin, setTelegramAdmin] = useState<TelegramAdminState | null>(null);
+  const [whatsappAdmin, setWhatsappAdmin] = useState<WhatsAppAdminState | null>(null);
+  const [googleAuth, setGoogleAuth] = useState<GoogleAuthStatus | null>(null);
   const [pendingDiscordApprovalUserId, setPendingDiscordApprovalUserId] = useState<string | null>(null);
   const [pendingTelegramApprovalUserId, setPendingTelegramApprovalUserId] = useState<string | null>(null);
+  const [pendingWhatsAppApprovalUserId, setPendingWhatsAppApprovalUserId] = useState<string | null>(null);
 
   const normalizeConfig = (cfg: ChannelConfig): ChannelConfig => ({
     ...cfg,
@@ -42,11 +56,19 @@ export default function SettingsTab() {
   });
 
   useEffect(() => {
-    Promise.all([getConfig(), getDiscordAdminState(), getTelegramAdminState()])
-      .then(([cfg, dcAdmin, tgAdmin]) => {
+    Promise.all([
+      getConfig(),
+      getDiscordAdminState(),
+      getTelegramAdminState(),
+      getWhatsAppAdminState().catch(() => null),
+      getGoogleAuthStatus().catch(() => null),
+    ])
+      .then(([cfg, dcAdmin, tgAdmin, waAdmin, gAuth]) => {
         setConfig(normalizeConfig(cfg));
         setDiscordAdmin(dcAdmin);
         setTelegramAdmin(tgAdmin);
+        if (waAdmin) setWhatsappAdmin(waAdmin);
+        if (gAuth) setGoogleAuth(gAuth);
         setError(null);
       })
       .catch((err) => {
@@ -59,10 +81,17 @@ export default function SettingsTab() {
 
   useEffect(() => {
     const timer = setInterval(() => {
-      Promise.all([getDiscordAdminState(), getTelegramAdminState()])
-        .then(([dc, tg]) => {
+      Promise.all([
+        getDiscordAdminState(),
+        getTelegramAdminState(),
+        getWhatsAppAdminState().catch(() => null),
+        getGoogleAuthStatus().catch(() => null),
+      ])
+        .then(([dc, tg, wa, gAuth]) => {
           setDiscordAdmin(dc);
           setTelegramAdmin(tg);
+          if (wa) setWhatsappAdmin(wa);
+          if (gAuth) setGoogleAuth(gAuth);
         })
         .catch(() => {});
     }, 4000);
@@ -139,6 +168,91 @@ export default function SettingsTab() {
     []
   );
 
+  const handleWhatsAppApprovalAction = useCallback(
+    async (action: "approve" | "reject", userId: string) => {
+      setPendingWhatsAppApprovalUserId(userId);
+      try {
+        const state = await updateWhatsAppApproval(action, userId);
+        setWhatsappAdmin(state);
+      } catch (err) {
+        setSaveStatus(err instanceof Error ? err.message : "Failed to update approval.");
+      } finally {
+        setPendingWhatsAppApprovalUserId(null);
+      }
+    },
+    []
+  );
+
+  const handleWhatsAppDisconnect = useCallback(async () => {
+    try {
+      await disconnectWhatsApp();
+      setWhatsappAdmin((prev) =>
+        prev ? { ...prev, status: "disconnected", phone_number: "", qr_code: "" } : prev
+      );
+    } catch (err) {
+      setSaveStatus(err instanceof Error ? err.message : "Failed to disconnect WhatsApp.");
+    }
+  }, []);
+
+  const handleWhatsAppAddUser = useCallback(
+    async (userId: string) => {
+      const current = whatsappAdmin?.allowed_users ?? [];
+      if (current.includes(userId)) return;
+      const updated = [...current, userId];
+      try {
+        await updateWhatsAppSettings({ allowed_users: updated });
+        setWhatsappAdmin((prev) => (prev ? { ...prev, allowed_users: updated } : prev));
+      } catch (err) {
+        setSaveStatus(err instanceof Error ? err.message : "Failed to add user.");
+      }
+    },
+    [whatsappAdmin]
+  );
+
+  const handleWhatsAppRemoveUser = useCallback(
+    async (userId: string) => {
+      const current = whatsappAdmin?.allowed_users ?? [];
+      const updated = current.filter((u) => u !== userId);
+      try {
+        await updateWhatsAppSettings({ allowed_users: updated });
+        setWhatsappAdmin((prev) => (prev ? { ...prev, allowed_users: updated } : prev));
+      } catch (err) {
+        setSaveStatus(err instanceof Error ? err.message : "Failed to remove user.");
+      }
+    },
+    [whatsappAdmin]
+  );
+
+  const handleWhatsAppPolicyChange = useCallback(
+    async (field: "group_policy" | "dm_policy", value: string) => {
+      try {
+        await updateWhatsAppSettings({ [field]: value });
+        setWhatsappAdmin((prev) => (prev ? { ...prev, [field]: value } : prev));
+      } catch (err) {
+        setSaveStatus(err instanceof Error ? err.message : "Failed to update policy.");
+      }
+    },
+    []
+  );
+
+  const handleGoogleConnect = useCallback(async () => {
+    try {
+      const { url } = await getGoogleAuthURL();
+      window.open(url, "_blank");
+    } catch (err) {
+      setSaveStatus(err instanceof Error ? err.message : "Failed to get Google auth URL.");
+    }
+  }, []);
+
+  const handleGoogleDisconnect = useCallback(async () => {
+    try {
+      await disconnectGoogle();
+      setGoogleAuth({ authenticated: false });
+    } catch (err) {
+      setSaveStatus(err instanceof Error ? err.message : "Failed to disconnect Google.");
+    }
+  }, []);
+
   const handleSave = async () => {
     if (!config) return;
     setSaving(true);
@@ -195,6 +309,23 @@ export default function SettingsTab() {
           onApprove={(userId) => handleTelegramApprovalAction("approve", userId)}
           onReject={(userId) => handleTelegramApprovalAction("reject", userId)}
           pendingActionUserId={pendingTelegramApprovalUserId}
+        />
+
+        <WhatsAppSettings
+          adminState={whatsappAdmin}
+          onApprove={(userId) => handleWhatsAppApprovalAction("approve", userId)}
+          onReject={(userId) => handleWhatsAppApprovalAction("reject", userId)}
+          onDisconnect={handleWhatsAppDisconnect}
+          onAddUser={handleWhatsAppAddUser}
+          onRemoveUser={handleWhatsAppRemoveUser}
+          onPolicyChange={handleWhatsAppPolicyChange}
+          pendingActionUserId={pendingWhatsAppApprovalUserId}
+        />
+
+        <GoogleSettings
+          authStatus={googleAuth}
+          onConnect={handleGoogleConnect}
+          onDisconnect={handleGoogleDisconnect}
         />
 
         {/* Restart warning banner */}

@@ -159,3 +159,41 @@ export interface HeartbeatStatus {
   last_run: string;
   running: boolean;
 }
+
+// --- WhatsApp ---
+
+export interface WhatsAppDMConfig {
+  policy: "allow" | "deny";
+}
+
+export interface WhatsAppChannelConfig {
+  allowed_users: string[];
+  group_policy: "allowlist" | "open";
+  dm: WhatsAppDMConfig;
+}
+
+export interface WhatsAppPendingApproval {
+  user_id: string;
+  display_name: string;
+  phone_number: string;
+  preview: string;
+  message_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface WhatsAppAdminState {
+  group_policy: "allowlist" | "open";
+  dm_policy: "allow" | "deny";
+  allowed_users: string[];
+  pending_approvals: WhatsAppPendingApproval[];
+  status: "disconnected" | "qr_pending" | "connected";
+  phone_number: string;
+  qr_code: string;
+}
+
+// --- Google ---
+
+export interface GoogleAuthStatus {
+  authenticated: boolean;
+}
