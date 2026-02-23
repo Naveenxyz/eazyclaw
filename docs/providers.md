@@ -8,7 +8,7 @@ EazyClaw supports 6 LLM providers. Set API keys as environment variables — the
 
 | Provider | Env Var | Default Model | Notes |
 |---|---|---|---|
-| Kimi Coding | `KIMI_API_KEY` | k2p5 | Recommended — cheapest Claude-quality option (~$9/mo) |
+| Kimi Coding | `KIMI_API_KEY` | k2p5 | Recommended — cheapest Claude-quality option (~$1/mo) |
 | Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | Direct Claude access |
 | OpenAI | `OPENAI_API_KEY` | gpt-4.1 | GPT models |
 | Google Gemini | `GEMINI_API_KEY` | gemini-2.5-flash | Large context window |
@@ -19,7 +19,7 @@ EazyClaw supports 6 LLM providers. Set API keys as environment variables — the
 
 Kimi Coding is the cheapest way to get Claude-level intelligence:
 
-- ~$9/month for the Coding plan
+- ~$1/month for the Coding plan
 - Sign up at kimi.com, subscribe to the Coding plan, and copy your API key (it has the `sk-kimi-` prefix)
 - Can swap to direct Anthropic or OpenAI at any time by setting the corresponding env var
 

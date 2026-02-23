@@ -2,7 +2,7 @@
 
 EazyClaw is an AI agent gateway — a self-hosted bot that connects AI models to Telegram, Discord, and a web dashboard, with persistent memory, a cron scheduler, and a skills system.
 
-**Cheapest viable setup:** Kimi Coding (~$9/mo) + Railway ($5/mo) = **~$14/mo total**
+**Cheapest viable setup:** Kimi Coding (~$1/mo) + Railway free tier = **~$1/mo total**
 
 ---
 
@@ -18,7 +18,7 @@ EazyClaw is an AI agent gateway — a self-hosted bot that connects AI models to
 ## Step 1: Get a Kimi API Key
 
 1. Go to [kimi.com](https://kimi.com) and sign up
-2. Subscribe to the **Coding** plan (~$9/mo)
+2. Subscribe to the **Coding** plan (~$1/mo)
 3. Navigate to API settings and generate a key
 4. It will start with `sk-kimi-`
 

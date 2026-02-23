@@ -20,7 +20,7 @@ open http://localhost:8080
 
 ## Deploy to Railway
 
-Get a personal AI agent running for ~$14/month (Kimi Coding $9 + Railway $5).
+Get a personal AI agent running for ~$1/month (Kimi Coding $1 + Railway free tier).
 
 See the **[Getting Started Guide](docs/getting-started.md)** — deploy to Telegram + Railway in under 15 minutes.
 
