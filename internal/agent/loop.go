@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"time"
-
 	"github.com/eazyclaw/eazyclaw/internal/bus"
 	providerPkg "github.com/eazyclaw/eazyclaw/internal/provider"
 	"github.com/eazyclaw/eazyclaw/internal/router"
@@ -164,10 +163,9 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 	}
 	isHeartbeat := msg.ChannelID == "heartbeat"
 
-	// Always use heuristic for pre-call estimation — it tracks actual message state.
-	// LastPromptTokens is stale (from a previous turn's API response).
-	estimatedTokens := estimateSessionTokens(session.Messages)
-	remainingBeforeLimit := remainingTokens(contextWindowTokens, estimatedTokens)
+	// Use actual provider-reported tokens from last turn. 0 = unknown (new session).
+	actualTokens := session.LastPromptTokens
+	remainingBeforeLimit := remainingTokens(contextWindowTokens, actualTokens)
 
 	// Build system prompt.
 	systemPrompt := a.context.BuildFor(PromptContext{
@@ -178,7 +176,7 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		Provider:                 prov.Name(),
 		Model:                    model,
 		ContextWindowTokens:      contextWindowTokens,
-		EstimatedContextTokens:   estimatedTokens,
+		EstimatedContextTokens:   actualTokens,
 		EstimatedRemainingTokens: remainingBeforeLimit,
 	})
 
@@ -187,8 +185,9 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		slog.Warn("agent: compaction step failed", "session_id", sessionID, "error", err)
 	}
 
-	estimatedTokens = estimateSessionTokens(session.Messages)
-	remainingBeforeLimit = remainingTokens(contextWindowTokens, estimatedTokens)
+	// Rebuild system prompt after potential compaction.
+	actualTokens = session.LastPromptTokens
+	remainingBeforeLimit = remainingTokens(contextWindowTokens, actualTokens)
 	systemPrompt = a.context.BuildFor(PromptContext{
 		SessionID:                sessionID,
 		IsDirect:                 isDirect,
@@ -197,7 +196,7 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 		Provider:                 prov.Name(),
 		Model:                    model,
 		ContextWindowTokens:      contextWindowTokens,
-		EstimatedContextTokens:   estimatedTokens,
+		EstimatedContextTokens:   actualTokens,
 		EstimatedRemainingTokens: remainingBeforeLimit,
 	})
 
@@ -242,7 +241,7 @@ func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, 
 	}
 
 	contextWindowTokens := a.memory.ContextWindowForModel(model)
-	promptTokensBefore := estimateSessionTokens(session.Messages)
+	actualTokensBefore := session.LastPromptTokens // 0 if unknown
 	msgCountBefore := len(session.Messages)
 
 	// Parse optional custom instructions after "/compact".
@@ -296,14 +295,30 @@ func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, 
 	summarized := session.Messages[:splitIdx]
 	recent := session.Messages[splitIdx:]
 
-	compactionPrompt := a.memory.BuildCompactionPrompt()
+	// Clone messages for rollback on failure.
+	backup := CloneMessages(session.Messages)
+
+	compactionSystemPrompt := systemPrompt
 	if customInstructions != "" {
-		compactionPrompt += "\n\nAdditional instructions: " + customInstructions
+		compactionSystemPrompt += "\n\nAdditional instructions: " + customInstructions
 	}
 
-	summary, err := a.generateCompactionSummary(ctx, prov, model, summarized, systemPrompt+"\n\n"+compactionPrompt)
+	summary, err := a.generateCompactionSummary(ctx, prov, model, summarized, compactionSystemPrompt, contextWindowTokens)
 	if err != nil {
-		a.sendError(msg, fmt.Sprintf("Compaction failed: %v", err))
+		slog.Warn("agent: manual compact summary failed, attempting emergency compaction", "session_id", sessionID, "error", err)
+		a.emergencyCompaction(session)
+		a.saveSession(session)
+		reply := fmt.Sprintf(
+			"Emergency compaction performed (summary generation failed).\n\nBefore: %d messages\nAfter: %d messages",
+			msgCountBefore, len(session.Messages),
+		)
+		a.sendReply(msg, reply)
+		return
+	}
+	if summary == "" {
+		// Empty summary — restore original messages.
+		session.Messages = backup
+		a.sendError(msg, "Compaction produced empty summary — session unchanged.")
 		a.saveSession(session)
 		return
 	}
@@ -315,7 +330,16 @@ func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, 
 	next := make([]providerPkg.Message, 0, 1+len(recent))
 	next = append(next, compactionMsg)
 	next = append(next, recent...)
-	session.Messages = next
+
+	// Sanitize to fix any orphaned tool messages from the split.
+	sanitized, report := SanitizeMessages(next)
+	if report.DroppedOrphanedToolMessages > 0 || report.InsertedSyntheticToolResults > 0 {
+		slog.Info("agent: post-compact sanitize repaired messages",
+			"session_id", sessionID,
+			"dropped_orphaned", report.DroppedOrphanedToolMessages,
+			"inserted_synthetic", report.InsertedSyntheticToolResults)
+	}
+	session.Messages = sanitized
 	session.CompactionCount++
 	session.LastPromptTokens = 0 // Reset stale token count after compaction.
 
@@ -324,15 +348,21 @@ func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, 
 	}
 
 	msgCountAfter := len(session.Messages)
-	tokensAfter := estimateSessionTokens(session.Messages)
 	a.saveSession(session)
 
-	reply := fmt.Sprintf(
-		"Compacted.\n\nBefore: %d messages (~%dk tokens)\nAfter: %d messages (~%dk tokens)\nContext window: %dk tokens",
-		msgCountBefore, promptTokensBefore/1000,
-		msgCountAfter, tokensAfter/1000,
-		contextWindowTokens/1000,
-	)
+	var reply string
+	if actualTokensBefore > 0 {
+		reply = fmt.Sprintf(
+			"Compacted.\n\nBefore: %d messages (%dk tokens)\nAfter: %d messages\nContext window: %dk tokens",
+			msgCountBefore, actualTokensBefore/1000,
+			msgCountAfter, contextWindowTokens/1000,
+		)
+	} else {
+		reply = fmt.Sprintf(
+			"Compacted.\n\nBefore: %d messages\nAfter: %d messages\nContext window: %dk tokens",
+			msgCountBefore, msgCountAfter, contextWindowTokens/1000,
+		)
+	}
 	a.sendReply(msg, reply)
 }
 
@@ -364,6 +394,7 @@ func (a *AgentLoop) runToolLoop(
 			toolDefs,
 			iteration+1,
 			maxIterations,
+			lastUsage.InputTokens, // actual from previous iteration, 0 on first
 		)
 		req := &providerPkg.ChatRequest{
 			Model:        model,
@@ -444,10 +475,10 @@ func (a *AgentLoop) runCompactionIfNeeded(
 		return nil
 	}
 
-	// Always use heuristic — LastPromptTokens is stale from a previous turn.
-	estimatedTokens := estimateSessionTokens(session.Messages)
+	// Use actual provider-reported tokens. 0 = unknown.
+	actualTokens := session.LastPromptTokens
 
-	if !isHeartbeat && a.memory.ShouldFlushBeforeCompaction(estimatedTokens, session) {
+	if !isHeartbeat && actualTokens > 0 && a.memory.ShouldFlushBeforeCompaction(actualTokens, session) {
 		flushPrompt := a.memory.BuildPreCompactionFlushPrompt(now)
 		flushMessages := CloneMessages(session.Messages)
 		flushMessages = append(flushMessages, providerPkg.Message{
@@ -474,7 +505,9 @@ func (a *AgentLoop) runCompactionIfNeeded(
 		}
 	}
 
-	if !(a.memory.ShouldCompactByTokens(estimatedTokens) || a.memory.ShouldCompact(len(session.Messages))) {
+	// Trigger compaction on message count (always) or actual tokens (when known).
+	tokenTrigger := actualTokens > 0 && a.memory.ShouldCompactByTokens(actualTokens)
+	if !(tokenTrigger || a.memory.ShouldCompact(len(session.Messages))) {
 		return nil
 	}
 
@@ -482,6 +515,9 @@ func (a *AgentLoop) runCompactionIfNeeded(
 	if keep >= len(session.Messages) {
 		return nil
 	}
+
+	// Clone messages for rollback on failure.
+	backup := CloneMessages(session.Messages)
 
 	// Find a safe split point at a user message boundary to avoid
 	// orphaning tool messages whose assistant+tool_calls was removed.
@@ -492,9 +528,16 @@ func (a *AgentLoop) runCompactionIfNeeded(
 	summarized := session.Messages[:splitIdx]
 	recent := session.Messages[splitIdx:]
 
-	summary, err := a.generateCompactionSummary(ctx, prov, model, summarized, systemPrompt)
+	summary, err := a.generateCompactionSummary(ctx, prov, model, summarized, systemPrompt, contextWindowTokens)
 	if err != nil {
-		return err
+		slog.Warn("agent: compaction summary failed, attempting emergency compaction", "session_id", session.ID, "error", err)
+		a.emergencyCompaction(session)
+		return nil
+	}
+	if summary == "" {
+		// Empty summary — restore original messages.
+		session.Messages = backup
+		return fmt.Errorf("compaction produced empty summary")
 	}
 
 	compactionMsg := providerPkg.Message{
@@ -504,7 +547,16 @@ func (a *AgentLoop) runCompactionIfNeeded(
 	next := make([]providerPkg.Message, 0, 1+len(recent))
 	next = append(next, compactionMsg)
 	next = append(next, recent...)
-	session.Messages = next
+
+	// Sanitize to fix any orphaned tool messages from the split.
+	sanitized, report := SanitizeMessages(next)
+	if report.DroppedOrphanedToolMessages > 0 || report.InsertedSyntheticToolResults > 0 {
+		slog.Info("agent: post-compaction sanitize repaired messages",
+			"session_id", session.ID,
+			"dropped_orphaned", report.DroppedOrphanedToolMessages,
+			"inserted_synthetic", report.InsertedSyntheticToolResults)
+	}
+	session.Messages = sanitized
 	session.CompactionCount++
 	session.LastPromptTokens = 0 // Reset stale token count after compaction.
 
@@ -515,54 +567,103 @@ func (a *AgentLoop) runCompactionIfNeeded(
 	return nil
 }
 
+// emergencyCompaction drops the oldest 50% of messages and sanitizes the result.
+// Used as a fallback when normal compaction summary generation fails.
+func (a *AgentLoop) emergencyCompaction(session *Session) {
+	if len(session.Messages) < 2 {
+		return
+	}
+	halfIdx := len(session.Messages) / 2
+	// Try to align to a safe split point.
+	safeSplit := findSafeSplitPoint(session.Messages, len(session.Messages)-halfIdx)
+	if safeSplit <= 0 {
+		safeSplit = halfIdx
+	}
+
+	note := providerPkg.Message{
+		Role:    "assistant",
+		Content: "[EMERGENCY COMPACTION] Oldest messages were dropped because compaction summary generation failed. Some earlier context may be missing.",
+	}
+	remaining := session.Messages[safeSplit:]
+	next := make([]providerPkg.Message, 0, 1+len(remaining))
+	next = append(next, note)
+	next = append(next, remaining...)
+
+	sanitized, _ := SanitizeMessages(next)
+	session.Messages = sanitized
+	session.CompactionCount++
+	session.LastPromptTokens = 0
+	slog.Warn("agent: emergency compaction performed", "session_id", session.ID, "dropped_messages", safeSplit)
+}
+
 // findSafeSplitPoint finds the best index to split messages for compaction.
-// It ensures the split happens at a user message boundary so that no tool
-// messages are orphaned (i.e., their parent assistant+tool_calls stays with them).
+// It ensures the split happens at a user message boundary AND that the preceding
+// message is not an assistant with tool calls (which would orphan the tool results
+// that follow it in the kept portion).
 func findSafeSplitPoint(messages []providerPkg.Message, desiredKeep int) int {
 	if desiredKeep >= len(messages) {
 		return 0
 	}
-	splitIdx := len(messages) - desiredKeep
+	targetIdx := len(messages) - desiredKeep
 
-	// Walk forward from the desired split point to find a user message.
-	// This keeps slightly fewer messages in the summarized portion,
-	// ensuring no orphaned tool messages in the recent portion.
-	for i := splitIdx; i < len(messages); i++ {
-		if messages[i].Role == "user" {
-			return i
+	// Collect all valid split points: user messages where the previous message
+	// is NOT an assistant with tool calls.
+	var validSplits []int
+	for i := 1; i < len(messages); i++ {
+		if messages[i].Role != "user" {
+			continue
 		}
+		prev := messages[i-1]
+		if prev.Role == "assistant" && len(prev.ToolCalls) > 0 {
+			continue
+		}
+		validSplits = append(validSplits, i)
 	}
 
-	// If no user message found forward, walk backward.
-	for i := splitIdx - 1; i > 0; i-- {
-		if messages[i].Role == "user" {
-			return i
-		}
+	if len(validSplits) == 0 {
+		return 0
 	}
 
-	// Last resort: original split point.
-	return splitIdx
+	// Pick the valid split point closest to targetIdx.
+	best := validSplits[0]
+	bestDist := abs(best - targetIdx)
+	for _, idx := range validSplits[1:] {
+		d := abs(idx - targetIdx)
+		if d < bestDist {
+			best = idx
+			bestDist = d
+		}
+	}
+	return best
 }
 
-func estimateSessionTokens(messages []providerPkg.Message) int {
-	totalChars := 0
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// roughTokenEstimate is a byte-based fallback for when actual provider
+// token counts are unavailable (e.g., first iteration of tool loop).
+// Uses bytes (not runes) to stay conservative for multibyte text.
+func roughTokenEstimate(messages []providerPkg.Message) int {
+	totalBytes := 0
 	for _, m := range messages {
-		totalChars += len(m.Content)
-		totalChars += len(m.Role) + len(m.ToolCallID)
+		totalBytes += len(m.Content) + len(m.Role) + len(m.ToolCallID)
 		for _, tc := range m.ToolCalls {
-			totalChars += len(tc.ID) + len(tc.Name) + len(tc.Arguments)
+			totalBytes += len(tc.ID) + len(tc.Name) + len(tc.Arguments)
 		}
 	}
-	// Rough heuristic: ~4 chars/token in mixed English/code text.
-	return totalChars / 4
+	return totalBytes / 4
 }
 
-func estimateToolDefTokens(toolDefs []providerPkg.ToolDef) int {
-	totalChars := 0
+func roughToolDefTokens(toolDefs []providerPkg.ToolDef) int {
+	totalBytes := 0
 	for _, td := range toolDefs {
-		totalChars += len(td.Name) + len(td.Description) + len(td.Parameters)
+		totalBytes += len(td.Name) + len(td.Description) + len(td.Parameters)
 	}
-	return totalChars / 4
+	return totalBytes / 4
 }
 
 func remainingTokens(contextWindowTokens, estimatedTokens int) int {
@@ -584,15 +685,11 @@ func buildRuntimeSnapshotPrompt(
 	toolDefs []providerPkg.ToolDef,
 	iteration int,
 	maxIterations int,
+	actualInputTokens int, // from last provider response, 0 if unknown
 ) string {
 	if providerName == "" && model == "" && contextWindowTokens <= 0 {
 		return ""
 	}
-
-	messageTokens := estimateSessionTokens(history)
-	toolTokens := estimateToolDefTokens(toolDefs)
-	estimatedTokens := messageTokens + toolTokens
-	remaining := remainingTokens(contextWindowTokens, estimatedTokens)
 
 	var sb strings.Builder
 	sb.WriteString("\n\n## Runtime Snapshot (live)\n")
@@ -604,12 +701,25 @@ func buildRuntimeSnapshotPrompt(
 	}
 	sb.WriteString(fmt.Sprintf("- Tool-loop iteration: %d/%d\n", iteration, maxIterations))
 	sb.WriteString(fmt.Sprintf("- Messages in context: %d\n", len(history)))
-	sb.WriteString(fmt.Sprintf("- Estimated input tokens this call: %d\n", estimatedTokens))
-	if contextWindowTokens > 0 {
-		sb.WriteString(fmt.Sprintf("- Context window (configured): %d tokens\n", contextWindowTokens))
-		sb.WriteString(fmt.Sprintf("- Estimated remaining before limit: %d tokens\n", remaining))
+
+	if actualInputTokens > 0 {
+		// Real token count from provider API.
+		sb.WriteString(fmt.Sprintf("- Input tokens (actual): %d\n", actualInputTokens))
+		if contextWindowTokens > 0 {
+			remaining := remainingTokens(contextWindowTokens, actualInputTokens)
+			sb.WriteString(fmt.Sprintf("- Context window: %d tokens\n", contextWindowTokens))
+			sb.WriteString(fmt.Sprintf("- Remaining: %d tokens\n", remaining))
+		}
+	} else {
+		// No actual data yet — show rough estimate labeled as such.
+		est := roughTokenEstimate(history) + roughToolDefTokens(toolDefs)
+		sb.WriteString(fmt.Sprintf("- Input tokens (rough estimate): ~%d\n", est))
+		if contextWindowTokens > 0 {
+			remaining := remainingTokens(contextWindowTokens, est)
+			sb.WriteString(fmt.Sprintf("- Context window: %d tokens\n", contextWindowTokens))
+			sb.WriteString(fmt.Sprintf("- Remaining (estimated): ~%d tokens\n", remaining))
+		}
 	}
-	sb.WriteString("- Estimates are approximate; use them for planning only\n")
 	return sb.String()
 }
 
@@ -620,31 +730,50 @@ func (a *AgentLoop) generateCompactionSummary(
 	model string,
 	history []providerPkg.Message,
 	systemPrompt string,
+	contextWindowTokens int,
 ) (string, error) {
 	if len(history) == 0 {
 		return "No prior messages to summarize.", nil
 	}
 
-	// Serialize messages as a plain text timeline (nanobot approach).
-	// This avoids sending raw tool_call/tool_result structures to the LLM,
-	// which prevents API errors from orphaned tool call IDs after splitting.
-	transcript := serializeMessagesAsText(history)
-
-	req := &providerPkg.ChatRequest{
-		Model: model,
-		Messages: []providerPkg.Message{
-			{Role: "user", Content: transcript},
-		},
-		SystemPrompt: systemPrompt + "\n\n" + a.memory.BuildCompactionPrompt(),
-		MaxTokens:    900,
+	// Filter out oversized messages (>50% of context window in bytes).
+	maxContentBytes := contextWindowTokens * 2 // rough: 50% of context in bytes
+	var filtered []providerPkg.Message
+	skippedCount := 0
+	if maxContentBytes > 0 {
+		for _, m := range history {
+			if len(m.Content) > maxContentBytes {
+				skippedCount++
+				continue
+			}
+			filtered = append(filtered, m)
+		}
+	}
+	if len(filtered) == 0 {
+		filtered = history
+		skippedCount = 0
 	}
 
-	resp, err := prov.ChatCompletion(ctx, req)
+	// Add compaction prompt once here — singleSummarize/multiPartSummarize use it as-is.
+	fullPrompt := systemPrompt + "\n\n" + a.memory.BuildCompactionPrompt()
+
+	var summary string
+	var err error
+
+	if len(filtered) > 40 {
+		summary, err = a.multiPartSummarize(ctx, prov, model, filtered, fullPrompt)
+	} else {
+		summary, err = a.singleSummarize(ctx, prov, model, filtered, fullPrompt)
+	}
 	if err != nil {
 		return "", err
 	}
 
-	summary := strings.TrimSpace(resp.Content)
+	if skippedCount > 0 {
+		summary += fmt.Sprintf("\n\n[Note: %d oversized messages were omitted from this summary.]", skippedCount)
+	}
+
+	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		summary = "Compaction completed (empty summary)."
 	}
@@ -654,6 +783,75 @@ func (a *AgentLoop) generateCompactionSummary(
 		summary = summary[:maxChars]
 	}
 	return summary, nil
+}
+
+// singleSummarize generates a compaction summary from a single LLM call.
+func (a *AgentLoop) singleSummarize(
+	ctx context.Context,
+	prov providerPkg.Provider,
+	model string,
+	history []providerPkg.Message,
+	systemPrompt string,
+) (string, error) {
+	transcript := serializeMessagesAsText(history)
+
+	req := &providerPkg.ChatRequest{
+		Model: model,
+		Messages: []providerPkg.Message{
+			{Role: "user", Content: transcript},
+		},
+		SystemPrompt: systemPrompt,
+		MaxTokens:    900,
+	}
+
+	resp, err := prov.ChatCompletion(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Content), nil
+}
+
+// multiPartSummarize splits large histories at the midpoint, summarizes each
+// half, then merges with a third LLM call.
+func (a *AgentLoop) multiPartSummarize(
+	ctx context.Context,
+	prov providerPkg.Provider,
+	model string,
+	history []providerPkg.Message,
+	systemPrompt string,
+) (string, error) {
+	mid := len(history) / 2
+
+	firstSummary, err := a.singleSummarize(ctx, prov, model, history[:mid], systemPrompt)
+	if err != nil {
+		return "", err
+	}
+
+	secondSummary, err := a.singleSummarize(ctx, prov, model, history[mid:], systemPrompt)
+	if err != nil {
+		return "", err
+	}
+
+	// Merge the two summaries with a third LLM call.
+	mergePrompt := "Merge these two conversation summaries into one concise summary. Preserve all key facts, decisions, and open tasks.\n\n" +
+		"PART 1:\n" + firstSummary + "\n\nPART 2:\n" + secondSummary
+
+	mergeReq := &providerPkg.ChatRequest{
+		Model: model,
+		Messages: []providerPkg.Message{
+			{Role: "user", Content: mergePrompt},
+		},
+		SystemPrompt: systemPrompt,
+		MaxTokens:    900,
+	}
+
+	resp, err := prov.ChatCompletion(ctx, mergeReq)
+	if err != nil {
+		// Fall back to concatenation if merge fails.
+		slog.Warn("agent: multi-part merge call failed, falling back to concatenation", "error", err)
+		return firstSummary + "\n\n" + secondSummary, nil
+	}
+	return strings.TrimSpace(resp.Content), nil
 }
 
 // serializeMessagesAsText converts message history into a plain text timeline
