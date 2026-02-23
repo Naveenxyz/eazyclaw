@@ -666,6 +666,19 @@ func (w *WebChannel) handleConfigGet(rw http.ResponseWriter, r *http.Request) {
 		Telegram: w.channelCfg.Telegram,
 		WhatsApp: w.channelCfg.WhatsApp,
 	}
+
+	// Override allowed_users from SQLite store (source of truth) instead of static config.
+	if w.store != nil {
+		if users, err := w.store.AllowedUsers("discord"); err == nil {
+			resp.Discord.AllowedUsers = users
+		}
+		if users, err := w.store.AllowedUsers("telegram"); err == nil {
+			resp.Telegram.AllowedUsers = users
+		}
+		if users, err := w.store.AllowedUsers("whatsapp"); err == nil {
+			resp.WhatsApp.AllowedUsers = users
+		}
+	}
 	if resp.Discord.AllowedUsers == nil {
 		resp.Discord.AllowedUsers = []string{}
 	}
@@ -719,22 +732,39 @@ func (w *WebChannel) handleConfigPut(rw http.ResponseWriter, r *http.Request) {
 		channels = make(map[string]any)
 	}
 
+	// Route allowed_users changes to SQLite store; keep static config in YAML.
 	if incoming.Discord != nil {
-		channels["discord"] = incoming.Discord
+		if w.store != nil && incoming.Discord.AllowedUsers != nil {
+			w.store.SetAllowedUsers("discord", incoming.Discord.AllowedUsers)
+		}
+		// Strip allowed_users from YAML write — store is source of truth.
+		yamlCopy := *incoming.Discord
+		yamlCopy.AllowedUsers = nil
+		channels["discord"] = yamlCopy
 		w.channelCfg.Discord = *incoming.Discord
 		if w.discord != nil {
 			w.discord.ApplyConfig(*incoming.Discord)
 		}
 	}
 	if incoming.Telegram != nil {
-		channels["telegram"] = incoming.Telegram
+		if w.store != nil && incoming.Telegram.AllowedUsers != nil {
+			w.store.SetAllowedUsers("telegram", incoming.Telegram.AllowedUsers)
+		}
+		yamlCopy := *incoming.Telegram
+		yamlCopy.AllowedUsers = nil
+		channels["telegram"] = yamlCopy
 		w.channelCfg.Telegram = *incoming.Telegram
 		if w.telegram != nil {
 			w.telegram.ApplyConfig(*incoming.Telegram)
 		}
 	}
 	if incoming.WhatsApp != nil {
-		channels["whatsapp"] = incoming.WhatsApp
+		if w.store != nil && incoming.WhatsApp.AllowedUsers != nil {
+			w.store.SetAllowedUsers("whatsapp", incoming.WhatsApp.AllowedUsers)
+		}
+		yamlCopy := *incoming.WhatsApp
+		yamlCopy.AllowedUsers = nil
+		channels["whatsapp"] = yamlCopy
 		w.channelCfg.WhatsApp = *incoming.WhatsApp
 		if w.whatsapp != nil {
 			w.whatsapp.ApplyConfig(*incoming.WhatsApp)
@@ -742,7 +772,7 @@ func (w *WebChannel) handleConfigPut(rw http.ResponseWriter, r *http.Request) {
 	}
 	fullCfg["channels"] = channels
 
-	// Write back.
+	// Write back (without allowed_users — those live in SQLite now).
 	out, err := yaml.Marshal(fullCfg)
 	if err != nil {
 		http.Error(rw, "failed to marshal config", http.StatusInternalServerError)
