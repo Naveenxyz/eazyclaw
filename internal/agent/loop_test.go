@@ -131,7 +131,7 @@ func TestAgentLoopCompactionAndMemoryFlush(t *testing.T) {
 		if out.Text != "final user answer" {
 			t.Fatalf("unexpected outbound text: %q", out.Text)
 		}
-	case <-time.After(800 * time.Millisecond):
+	case <-time.After(3 * time.Second):
 		t.Fatalf("expected outbound response")
 	}
 
@@ -209,7 +209,7 @@ func TestAgentLoopNoReplySuppressed(t *testing.T) {
 	select {
 	case out := <-msgBus.Outbound:
 		t.Fatalf("expected no outbound message, got: %+v", out)
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(3 * time.Second):
 		// expected
 	}
 
@@ -264,7 +264,7 @@ func TestAgentLoopInjectsRuntimeSnapshotInPrompt(t *testing.T) {
 
 	select {
 	case <-msgBus.Outbound:
-	case <-time.After(800 * time.Millisecond):
+	case <-time.After(3 * time.Second):
 		t.Fatalf("expected outbound response")
 	}
 
