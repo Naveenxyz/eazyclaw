@@ -57,7 +57,7 @@ channels:
   web:
     enabled: true
     port: 8080
-    # Password is set via WEB_PASSWORD env var only
+    # Password is set via WEB_PASSWORD env var (required)
 
 tools:
   shell:

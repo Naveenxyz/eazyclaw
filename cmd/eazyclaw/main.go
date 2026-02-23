@@ -254,6 +254,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Web dashboard channel (enabled by default or via config)
 	if cfg.Channels.Web.Enabled || cfg.Channels.Web.Port > 0 {
+		if cfg.Channels.Web.Password == "" {
+			slog.Error("WEB_PASSWORD is required — set it as an environment variable to secure the dashboard")
+			os.Exit(1)
+		}
 		web := channelPkg.NewWebChannel(cfg.Channels.Web.Port, cfg.Channels.Web.Password, sessStore, provReg)
 		web.SetSkills(skills)
 		web.SetChannelsConfig(&cfg.Channels)

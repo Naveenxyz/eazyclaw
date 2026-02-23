@@ -14,7 +14,7 @@ Set a password via environment variable:
 WEB_PASSWORD=your-secret
 ```
 
-If `WEB_PASSWORD` is not set, the dashboard runs without authentication. This is only suitable for local development.
+**`WEB_PASSWORD` is required.** The server will refuse to start without it.
 
 ## Tabs
 

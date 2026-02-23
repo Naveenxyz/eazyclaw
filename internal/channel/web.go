@@ -236,12 +236,6 @@ func (w *WebChannel) Start(ctx context.Context, b *bus.Bus) error {
 // authMiddleware wraps handlers requiring authentication.
 func (w *WebChannel) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		// No password configured = no auth required.
-		if w.password == "" {
-			next.ServeHTTP(rw, r)
-			return
-		}
-
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil || cookie.Value == "" {
 			http.Error(rw, "unauthorized", http.StatusUnauthorized)

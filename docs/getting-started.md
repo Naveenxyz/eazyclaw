@@ -71,6 +71,7 @@ railway init
 # Set your environment variables
 railway variables set KIMI_API_KEY=sk-kimi-...
 railway variables set TELEGRAM_BOT_TOKEN=123456789:ABCdef...
+railway variables set WEB_PASSWORD=pick-a-password
 railway variables set GH_TOKEN=github_pat_...      # optional
 
 # Add persistent storage
@@ -88,6 +89,7 @@ railway up
 4. Under **Variables**, add:
    - `KIMI_API_KEY`
    - `TELEGRAM_BOT_TOKEN`
+   - `WEB_PASSWORD`
    - `GH_TOKEN` *(optional)*
 5. Under **Volumes**, add a volume mounted at `/data`
 6. Go to **Settings → Networking** and click **Generate Domain**

@@ -22,7 +22,7 @@ open http://localhost:8080
 
 Get a personal AI agent running for ~$1/month (Kimi Coding $1 + Railway free tier).
 
-See the **[Getting Started Guide](docs/getting-started.md)** — deploy to Telegram + Railway in under 15 minutes.
+See the **[Getting Started Guide](docs/getting-started.md)** — deploy to Telegram + Railway in under 10 minutes.
 
 ## Channels
 
@@ -56,7 +56,7 @@ Runtime includes `git`, `gh`, `rg`, `fd`, `tree`, `wget`, `jq`, `tmux`, `node`, 
 
 | Guide | Description |
 |---|---|
-| [Getting Started](docs/getting-started.md) | Onboarding: Kimi + Railway in 15 minutes |
+| [Getting Started](docs/getting-started.md) | Onboarding: Kimi + Railway in 10 minutes |
 | [Providers](docs/providers.md) | All 6 providers, model config, multi-provider routing |
 | [Configuration](docs/configuration.md) | config.yaml reference + environment variables |
 | [Memory System](docs/memory-system.md) | Persona, bootstrap files, compaction, day-wise memory |

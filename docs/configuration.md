@@ -17,7 +17,7 @@ EazyClaw loads its configuration from `/data/eazyclaw/config.yaml`. Any value in
 | `WHATSAPP_ENABLED` | Enable WhatsApp bridge (`true`/`false`) |
 | `WHATSAPP_BRIDGE_URL` | Bridge WebSocket URL (default: `ws://whatsapp-bridge:3001`) |
 | `WHATSAPP_BRIDGE_TOKEN` | Shared secret for bridge authentication |
-| `WEB_PASSWORD` | Web dashboard password (no auth if unset) |
+| `WEB_PASSWORD` | Web dashboard password (**required**) |
 | `WEB_PORT` | Web dashboard port (default: `8080`) |
 | `GH_TOKEN` | GitHub CLI auth token |
 
@@ -81,7 +81,7 @@ channels:
   web:
     enabled: true
     port: 8080           # Overridden by WEB_PORT
-    password: ""         # Overridden by WEB_PASSWORD; no auth if unset
+    password: ""         # Overridden by WEB_PASSWORD (required)
     allowed_users: []    # Reserved for future per-user web auth
 
 tools:
