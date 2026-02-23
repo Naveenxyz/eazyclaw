@@ -24,6 +24,7 @@ import (
 	"github.com/eazyclaw/eazyclaw/internal/config"
 	providerPkg "github.com/eazyclaw/eazyclaw/internal/provider"
 	"github.com/eazyclaw/eazyclaw/internal/skill"
+	"github.com/eazyclaw/eazyclaw/internal/state"
 	"github.com/eazyclaw/eazyclaw/internal/tool"
 )
 
@@ -79,6 +80,9 @@ type WebChannel struct {
 	telegram *TelegramChannel
 	whatsapp *WhatsAppChannel
 
+	// SQLite state store for mutable runtime data.
+	store *state.Store
+
 	// Google OAuth for Gmail + Calendar tools.
 	googleAuth *tool.GoogleAuth
 
@@ -129,6 +133,10 @@ func (w *WebChannel) SetMemoryDir(dir string) {
 	w.memoryDir = dir
 }
 
+// SetStateStore sets the SQLite state store for mutable runtime data.
+func (w *WebChannel) SetStateStore(s *state.Store) {
+	w.store = s
+}
 
 // SetDiscordChannel sets a live Discord channel reference for admin APIs.
 func (w *WebChannel) SetDiscordChannel(ch *DiscordChannel) {
@@ -758,7 +766,7 @@ func (w *WebChannel) handleDiscordAdmin(rw http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	state := channelDiscordSnapshot(w.channelCfg, w.discord)
+	state := channelDiscordSnapshot(w.channelCfg, w.discord, w.store)
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(state)
 }
@@ -766,7 +774,7 @@ func (w *WebChannel) handleDiscordAdmin(rw http.ResponseWriter, r *http.Request)
 func (w *WebChannel) handleDiscordApprovals(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		state := channelDiscordSnapshot(w.channelCfg, w.discord)
+		state := channelDiscordSnapshot(w.channelCfg, w.discord, w.store)
 		rw.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(rw).Encode(state)
 		return
@@ -795,100 +803,54 @@ func (w *WebChannel) handleDiscordApprovals(rw http.ResponseWriter, r *http.Requ
 	case "approve":
 		if w.discord != nil {
 			w.discord.ApproveUser(userID)
-		}
-		if err := w.persistDiscordAllowedUser(userID); err != nil {
-			http.Error(rw, err.Error(), http.StatusInternalServerError)
-			return
+		} else if w.store != nil {
+			w.store.AddAllowedUser("discord", userID)
+			w.store.DeletePending("discord", userID)
 		}
 	case "reject":
 		if w.discord != nil {
 			w.discord.RejectUser(userID)
+		} else if w.store != nil {
+			w.store.DeletePending("discord", userID)
 		}
 	default:
 		http.Error(rw, "action must be approve or reject", http.StatusBadRequest)
 		return
 	}
 
-	state := channelDiscordSnapshot(w.channelCfg, w.discord)
+	state := channelDiscordSnapshot(w.channelCfg, w.discord, w.store)
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(state)
 }
 
-func channelDiscordSnapshot(cfg *config.ChannelsConfig, ch *DiscordChannel) DiscordAdminState {
+func channelDiscordSnapshot(cfg *config.ChannelsConfig, ch *DiscordChannel, store *state.Store) DiscordAdminState {
 	if ch != nil {
-		state := ch.Snapshot()
-		if state.AllowedUsers == nil {
-			state.AllowedUsers = []string{}
+		s := ch.Snapshot()
+		if s.AllowedUsers == nil {
+			s.AllowedUsers = []string{}
 		}
-		if state.Pending == nil {
-			state.Pending = []DiscordPendingApproval{}
+		if s.Pending == nil {
+			s.Pending = []DiscordPendingApproval{}
 		}
-		return state
+		return s
 	}
 
-	state := DiscordAdminState{
+	st := DiscordAdminState{
 		AllowedUsers: []string{},
 		Pending:      []DiscordPendingApproval{},
 	}
 	if cfg != nil {
-		state.GroupPolicy = cfg.Discord.GroupPolicy
-		state.DMPolicy = cfg.Discord.DM.Policy
-		if len(cfg.Discord.AllowedUsers) > 0 {
-			state.AllowedUsers = append([]string{}, cfg.Discord.AllowedUsers...)
+		st.GroupPolicy = cfg.Discord.GroupPolicy
+		st.DMPolicy = cfg.Discord.DM.Policy
+	}
+	if store != nil {
+		if users, err := store.AllowedUsers("discord"); err == nil && len(users) > 0 {
+			st.AllowedUsers = users
 		}
+	} else if cfg != nil && len(cfg.Discord.AllowedUsers) > 0 {
+		st.AllowedUsers = append([]string{}, cfg.Discord.AllowedUsers...)
 	}
-	return state
-}
-
-func (w *WebChannel) persistDiscordAllowedUser(userID string) error {
-	if w.channelCfg == nil {
-		return fmt.Errorf("channel config unavailable")
-	}
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return fmt.Errorf("invalid user id")
-	}
-
-	exists := false
-	for _, u := range w.channelCfg.Discord.AllowedUsers {
-		if strings.TrimSpace(u) == userID {
-			exists = true
-			break
-		}
-	}
-	if !exists {
-		w.channelCfg.Discord.AllowedUsers = append(w.channelCfg.Discord.AllowedUsers, userID)
-	}
-
-	if w.configPath == "" {
-		return nil
-	}
-
-	data, err := os.ReadFile(w.configPath)
-	if err != nil {
-		return fmt.Errorf("failed to read config: %w", err)
-	}
-
-	var fullCfg map[string]any
-	if err := yaml.Unmarshal(data, &fullCfg); err != nil {
-		return fmt.Errorf("failed to parse config: %w", err)
-	}
-
-	channels, _ := fullCfg["channels"].(map[string]any)
-	if channels == nil {
-		channels = make(map[string]any)
-	}
-	channels["discord"] = w.channelCfg.Discord
-	fullCfg["channels"] = channels
-
-	out, err := yaml.Marshal(fullCfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-	if err := os.WriteFile(w.configPath, out, 0o644); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-	return nil
+	return st
 }
 
 // --- Telegram Admin API ---
@@ -899,7 +861,7 @@ func (w *WebChannel) handleTelegramAdmin(rw http.ResponseWriter, r *http.Request
 		return
 	}
 
-	state := channelTelegramSnapshot(w.channelCfg, w.telegram)
+	state := channelTelegramSnapshot(w.channelCfg, w.telegram, w.store)
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(state)
 }
@@ -907,7 +869,7 @@ func (w *WebChannel) handleTelegramAdmin(rw http.ResponseWriter, r *http.Request
 func (w *WebChannel) handleTelegramApprovals(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		state := channelTelegramSnapshot(w.channelCfg, w.telegram)
+		state := channelTelegramSnapshot(w.channelCfg, w.telegram, w.store)
 		rw.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(rw).Encode(state)
 		return
@@ -936,100 +898,54 @@ func (w *WebChannel) handleTelegramApprovals(rw http.ResponseWriter, r *http.Req
 	case "approve":
 		if w.telegram != nil {
 			w.telegram.ApproveUser(userID)
-		}
-		if err := w.persistTelegramAllowedUser(userID); err != nil {
-			http.Error(rw, err.Error(), http.StatusInternalServerError)
-			return
+		} else if w.store != nil {
+			w.store.AddAllowedUser("telegram", userID)
+			w.store.DeletePending("telegram", userID)
 		}
 	case "reject":
 		if w.telegram != nil {
 			w.telegram.RejectUser(userID)
+		} else if w.store != nil {
+			w.store.DeletePending("telegram", userID)
 		}
 	default:
 		http.Error(rw, "action must be approve or reject", http.StatusBadRequest)
 		return
 	}
 
-	state := channelTelegramSnapshot(w.channelCfg, w.telegram)
+	state := channelTelegramSnapshot(w.channelCfg, w.telegram, w.store)
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(state)
 }
 
-func channelTelegramSnapshot(cfg *config.ChannelsConfig, ch *TelegramChannel) TelegramAdminState {
+func channelTelegramSnapshot(cfg *config.ChannelsConfig, ch *TelegramChannel, store *state.Store) TelegramAdminState {
 	if ch != nil {
-		state := ch.Snapshot()
-		if state.AllowedUsers == nil {
-			state.AllowedUsers = []string{}
+		s := ch.Snapshot()
+		if s.AllowedUsers == nil {
+			s.AllowedUsers = []string{}
 		}
-		if state.Pending == nil {
-			state.Pending = []TelegramPendingApproval{}
+		if s.Pending == nil {
+			s.Pending = []TelegramPendingApproval{}
 		}
-		return state
+		return s
 	}
 
-	state := TelegramAdminState{
+	st := TelegramAdminState{
 		AllowedUsers: []string{},
 		Pending:      []TelegramPendingApproval{},
 	}
 	if cfg != nil {
-		state.GroupPolicy = cfg.Telegram.GroupPolicy
-		state.DMPolicy = cfg.Telegram.DM.Policy
-		if len(cfg.Telegram.AllowedUsers) > 0 {
-			state.AllowedUsers = append([]string{}, cfg.Telegram.AllowedUsers...)
+		st.GroupPolicy = cfg.Telegram.GroupPolicy
+		st.DMPolicy = cfg.Telegram.DM.Policy
+	}
+	if store != nil {
+		if users, err := store.AllowedUsers("telegram"); err == nil && len(users) > 0 {
+			st.AllowedUsers = users
 		}
+	} else if cfg != nil && len(cfg.Telegram.AllowedUsers) > 0 {
+		st.AllowedUsers = append([]string{}, cfg.Telegram.AllowedUsers...)
 	}
-	return state
-}
-
-func (w *WebChannel) persistTelegramAllowedUser(userID string) error {
-	if w.channelCfg == nil {
-		return fmt.Errorf("channel config unavailable")
-	}
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return fmt.Errorf("invalid user id")
-	}
-
-	exists := false
-	for _, u := range w.channelCfg.Telegram.AllowedUsers {
-		if strings.TrimSpace(u) == userID {
-			exists = true
-			break
-		}
-	}
-	if !exists {
-		w.channelCfg.Telegram.AllowedUsers = append(w.channelCfg.Telegram.AllowedUsers, userID)
-	}
-
-	if w.configPath == "" {
-		return nil
-	}
-
-	data, err := os.ReadFile(w.configPath)
-	if err != nil {
-		return fmt.Errorf("failed to read config: %w", err)
-	}
-
-	var fullCfg map[string]any
-	if err := yaml.Unmarshal(data, &fullCfg); err != nil {
-		return fmt.Errorf("failed to parse config: %w", err)
-	}
-
-	channels, _ := fullCfg["channels"].(map[string]any)
-	if channels == nil {
-		channels = make(map[string]any)
-	}
-	channels["telegram"] = w.channelCfg.Telegram
-	fullCfg["channels"] = channels
-
-	out, err := yaml.Marshal(fullCfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-	if err := os.WriteFile(w.configPath, out, 0o644); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-	return nil
+	return st
 }
 
 // --- Memory Explorer API ---
@@ -1314,7 +1230,7 @@ func (w *WebChannel) handleWhatsAppStatus(rw http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	state := channelWhatsAppSnapshot(w.channelCfg, w.whatsapp)
+	state := channelWhatsAppSnapshot(w.channelCfg, w.whatsapp, w.store)
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(state)
 }
@@ -1372,31 +1288,35 @@ func (w *WebChannel) handleWhatsAppSettings(rw http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if w.channelCfg == nil {
-		http.Error(rw, "channel config unavailable", http.StatusInternalServerError)
-		return
+	// Persist mutable state to SQLite store.
+	if w.store != nil {
+		if req.AllowedUsers != nil {
+			if err := w.store.SetAllowedUsers("whatsapp", req.AllowedUsers); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if req.GroupPolicy != "" {
+			w.store.SetPolicy("whatsapp", "group_policy", req.GroupPolicy)
+		}
+		if req.DMPolicy != "" {
+			w.store.SetPolicy("whatsapp", "dm_policy", req.DMPolicy)
+		}
 	}
 
-	// Apply changes to config.
-	if req.AllowedUsers != nil {
-		w.channelCfg.WhatsApp.AllowedUsers = req.AllowedUsers
-	}
-	if req.GroupPolicy != "" {
-		w.channelCfg.WhatsApp.GroupPolicy = req.GroupPolicy
-	}
-	if req.DMPolicy != "" {
-		w.channelCfg.WhatsApp.DM.Policy = req.DMPolicy
+	// Update in-memory config for policies (static settings).
+	if w.channelCfg != nil {
+		if req.GroupPolicy != "" {
+			w.channelCfg.WhatsApp.GroupPolicy = req.GroupPolicy
+		}
+		if req.DMPolicy != "" {
+			w.channelCfg.WhatsApp.DM.Policy = req.DMPolicy
+		}
 	}
 
 	// Hot-reload to channel.
-	if w.whatsapp != nil {
+	if w.whatsapp != nil && w.channelCfg != nil {
 		w.whatsapp.ApplyConfig(w.channelCfg.WhatsApp)
-	}
-
-	// Persist to config file.
-	if err := w.persistWhatsAppConfig(); err != nil {
-		http.Error(rw, err.Error(), http.StatusInternalServerError)
-		return
 	}
 
 	rw.Header().Set("Content-Type", "application/json")
@@ -1425,13 +1345,12 @@ func (w *WebChannel) handleWhatsAppApprove(rw http.ResponseWriter, r *http.Reque
 
 	if w.whatsapp != nil {
 		w.whatsapp.ApproveUser(userID)
-	}
-	if err := w.persistWhatsAppAllowedUser(userID); err != nil {
-		http.Error(rw, err.Error(), http.StatusInternalServerError)
-		return
+	} else if w.store != nil {
+		w.store.AddAllowedUser("whatsapp", userID)
+		w.store.DeletePending("whatsapp", userID)
 	}
 
-	state := channelWhatsAppSnapshot(w.channelCfg, w.whatsapp)
+	state := channelWhatsAppSnapshot(w.channelCfg, w.whatsapp, w.store)
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(state)
 }
@@ -1458,86 +1377,37 @@ func (w *WebChannel) handleWhatsAppReject(rw http.ResponseWriter, r *http.Reques
 
 	if w.whatsapp != nil {
 		w.whatsapp.RejectUser(userID)
+	} else if w.store != nil {
+		w.store.DeletePending("whatsapp", userID)
 	}
 
-	state := channelWhatsAppSnapshot(w.channelCfg, w.whatsapp)
+	state := channelWhatsAppSnapshot(w.channelCfg, w.whatsapp, w.store)
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(state)
 }
 
-func channelWhatsAppSnapshot(cfg *config.ChannelsConfig, ch *WhatsAppChannel) WhatsAppAdminState {
+func channelWhatsAppSnapshot(cfg *config.ChannelsConfig, ch *WhatsAppChannel, store *state.Store) WhatsAppAdminState {
 	if ch != nil {
 		return ch.Snapshot()
 	}
 
-	state := WhatsAppAdminState{
+	st := WhatsAppAdminState{
 		AllowedUsers: []string{},
 		Pending:      []WhatsAppPendingApproval{},
 		Status:       "disconnected",
 	}
 	if cfg != nil {
-		state.GroupPolicy = cfg.WhatsApp.GroupPolicy
-		state.DMPolicy = cfg.WhatsApp.DM.Policy
-		if len(cfg.WhatsApp.AllowedUsers) > 0 {
-			state.AllowedUsers = append([]string{}, cfg.WhatsApp.AllowedUsers...)
+		st.GroupPolicy = cfg.WhatsApp.GroupPolicy
+		st.DMPolicy = cfg.WhatsApp.DM.Policy
+	}
+	if store != nil {
+		if users, err := store.AllowedUsers("whatsapp"); err == nil && len(users) > 0 {
+			st.AllowedUsers = users
 		}
+	} else if cfg != nil && len(cfg.WhatsApp.AllowedUsers) > 0 {
+		st.AllowedUsers = append([]string{}, cfg.WhatsApp.AllowedUsers...)
 	}
-	return state
-}
-
-func (w *WebChannel) persistWhatsAppConfig() error {
-	if w.configPath == "" {
-		return nil
-	}
-
-	data, err := os.ReadFile(w.configPath)
-	if err != nil {
-		return fmt.Errorf("failed to read config: %w", err)
-	}
-
-	var fullCfg map[string]any
-	if err := yaml.Unmarshal(data, &fullCfg); err != nil {
-		return fmt.Errorf("failed to parse config: %w", err)
-	}
-
-	channels, _ := fullCfg["channels"].(map[string]any)
-	if channels == nil {
-		channels = make(map[string]any)
-	}
-	channels["whatsapp"] = w.channelCfg.WhatsApp
-	fullCfg["channels"] = channels
-
-	out, err := yaml.Marshal(fullCfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-	if err := os.WriteFile(w.configPath, out, 0o644); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-	return nil
-}
-
-func (w *WebChannel) persistWhatsAppAllowedUser(userID string) error {
-	if w.channelCfg == nil {
-		return fmt.Errorf("channel config unavailable")
-	}
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return fmt.Errorf("invalid user id")
-	}
-
-	exists := false
-	for _, u := range w.channelCfg.WhatsApp.AllowedUsers {
-		if strings.TrimSpace(u) == userID {
-			exists = true
-			break
-		}
-	}
-	if !exists {
-		w.channelCfg.WhatsApp.AllowedUsers = append(w.channelCfg.WhatsApp.AllowedUsers, userID)
-	}
-
-	return w.persistWhatsAppConfig()
+	return st
 }
 
 // --- Google OAuth API ---

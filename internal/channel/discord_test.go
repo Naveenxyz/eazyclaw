@@ -6,16 +6,28 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/eazyclaw/eazyclaw/internal/config"
+	"github.com/eazyclaw/eazyclaw/internal/state"
 )
 
+func mustOpenStore(t *testing.T) *state.Store {
+	t.Helper()
+	s, err := state.OpenPath(":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
 func TestDiscordDMUserAllowed_AllowlistPolicyFailsClosed(t *testing.T) {
+	store := mustOpenStore(t)
 	d := NewDiscordChannel("", config.DiscordChannelConfig{
 		GroupPolicy:  "allowlist",
 		AllowedUsers: []string{},
 		DM: config.DiscordDMConfig{
 			Policy: "allow",
 		},
-	})
+	}, store)
 
 	if d.isDMUserAllowed("123") {
 		t.Fatalf("expected DM to be denied when group_policy=allowlist and user is not allowlisted")
@@ -23,13 +35,15 @@ func TestDiscordDMUserAllowed_AllowlistPolicyFailsClosed(t *testing.T) {
 }
 
 func TestDiscordDMUserAllowed_AllowlistPolicyAllowsListedUser(t *testing.T) {
+	store := mustOpenStore(t)
+	store.AddAllowedUser("discord", "123")
 	d := NewDiscordChannel("", config.DiscordChannelConfig{
 		GroupPolicy:  "allowlist",
 		AllowedUsers: []string{"123"},
 		DM: config.DiscordDMConfig{
 			Policy: "allow",
 		},
-	})
+	}, store)
 
 	if !d.isDMUserAllowed("123") {
 		t.Fatalf("expected allowlisted DM user to be allowed")
@@ -37,13 +51,14 @@ func TestDiscordDMUserAllowed_AllowlistPolicyAllowsListedUser(t *testing.T) {
 }
 
 func TestDiscordDMUserAllowed_OpenPolicyAllowsWhenNoAllowlist(t *testing.T) {
+	store := mustOpenStore(t)
 	d := NewDiscordChannel("", config.DiscordChannelConfig{
 		GroupPolicy:  "open",
 		AllowedUsers: []string{},
 		DM: config.DiscordDMConfig{
 			Policy: "allow",
 		},
-	})
+	}, store)
 
 	if !d.isDMUserAllowed("123") {
 		t.Fatalf("expected DM user to be allowed in open policy without user allowlist")
@@ -51,13 +66,14 @@ func TestDiscordDMUserAllowed_OpenPolicyAllowsWhenNoAllowlist(t *testing.T) {
 }
 
 func TestDiscordDisallowedDMCreatesPendingApproval(t *testing.T) {
+	store := mustOpenStore(t)
 	d := NewDiscordChannel("", config.DiscordChannelConfig{
 		GroupPolicy:  "allowlist",
 		AllowedUsers: []string{},
 		DM: config.DiscordDMConfig{
 			Policy: "allow",
 		},
-	})
+	}, store)
 
 	d.messageCreateHandler(nil, &discordgo.MessageCreate{
 		Message: &discordgo.Message{
@@ -82,13 +98,14 @@ func TestDiscordDisallowedDMCreatesPendingApproval(t *testing.T) {
 }
 
 func TestDiscordApproveUserRemovesPendingAndAllowsDM(t *testing.T) {
+	store := mustOpenStore(t)
 	d := NewDiscordChannel("", config.DiscordChannelConfig{
 		GroupPolicy:  "allowlist",
 		AllowedUsers: []string{},
 		DM: config.DiscordDMConfig{
 			Policy: "allow",
 		},
-	})
+	}, store)
 	d.recordPendingDM("u-1", "tester", "hi", time.Now())
 
 	if !d.ApproveUser("u-1") {

@@ -20,6 +20,7 @@ import (
 	providerPkg "github.com/eazyclaw/eazyclaw/internal/provider"
 	"github.com/eazyclaw/eazyclaw/internal/router"
 	"github.com/eazyclaw/eazyclaw/internal/skill"
+	"github.com/eazyclaw/eazyclaw/internal/state"
 	"github.com/eazyclaw/eazyclaw/internal/tool"
 )
 
@@ -102,10 +103,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// 2. Create message bus
+	// 2. Open state store (SQLite for mutable runtime data)
+	stateStore, err := state.Open(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("failed to open state store: %w", err)
+	}
+	defer stateStore.Close()
+	if err := stateStore.SeedFromConfig(cfg.Channels); err != nil {
+		slog.Warn("failed to seed state store from config", "error", err)
+	}
+
+	// 3. Create message bus
 	msgBus := bus.New(100)
 
-	// 3. Create provider registry and auto-register from env vars
+	// 4. Create provider registry and auto-register from env vars
 	provReg := providerPkg.NewRegistry(cfg.Providers.DefaultModel)
 	provReg.AutoRegister(cfg.Providers)
 
@@ -193,7 +204,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sessStore := agent.NewSessionStore(filepath.Join(cfg.DataDir, "sessions"))
 
 	// 8. Create router
-	r := router.NewRouter(cfg.Channels)
+	r := router.NewRouter(stateStore)
 
 	// 9. Create agent loop
 	agentLoop := agent.NewAgentLoop(msgBus, provReg, toolReg, sessStore, ctxBuilder, memoryManager, r)
@@ -208,14 +219,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 	var whatsappChannel *channelPkg.WhatsAppChannel
 
 	if token := os.Getenv("TELEGRAM_BOT_TOKEN"); token != "" {
-		tg := channelPkg.NewTelegramChannel(token, cfg.Channels.Telegram)
+		tg := channelPkg.NewTelegramChannel(token, cfg.Channels.Telegram, stateStore)
 		channels = append(channels, tg)
 		telegramChannel = tg
 		slog.Info("telegram channel enabled")
 	}
 
 	if token := os.Getenv("DISCORD_BOT_TOKEN"); token != "" {
-		dc := channelPkg.NewDiscordChannel(token, cfg.Channels.Discord)
+		dc := channelPkg.NewDiscordChannel(token, cfg.Channels.Discord, stateStore)
 		channels = append(channels, dc)
 		discordChannel = dc
 		slog.Info("discord channel enabled")
@@ -223,7 +234,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	if cfg.Channels.WhatsApp.Enabled || os.Getenv("WHATSAPP_ENABLED") == "true" {
 		waDataDir := filepath.Join(cfg.DataDir, "whatsapp")
-		wa := channelPkg.NewWhatsAppChannel(cfg.Channels.WhatsApp, waDataDir)
+		wa := channelPkg.NewWhatsAppChannel(cfg.Channels.WhatsApp, waDataDir, stateStore)
 		channels = append(channels, wa)
 		whatsappChannel = wa
 		slog.Info("whatsapp channel enabled")
@@ -248,6 +259,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		web.SetChannelsConfig(&cfg.Channels)
 		web.SetConfigPath(configPath)
 		web.SetMemoryDir(memDir)
+		web.SetStateStore(stateStore)
 		web.SetDiscordChannel(discordChannel)
 		web.SetTelegramChannel(telegramChannel)
 		web.SetWhatsAppChannel(whatsappChannel)

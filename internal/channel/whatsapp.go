@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/eazyclaw/eazyclaw/internal/bus"
 	"github.com/eazyclaw/eazyclaw/internal/config"
+	"github.com/eazyclaw/eazyclaw/internal/state"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -47,32 +47,26 @@ type WhatsAppAdminState struct {
 
 // WhatsAppChannel integrates with the WhatsApp API via whatsmeow.
 type WhatsAppChannel struct {
-	cfg          config.WhatsAppChannelConfig
-	client       *whatsmeow.Client
-	container    *sqlstore.Container
-	bus          *bus.Bus
-	qrChan       <-chan whatsmeow.QRChannelItem
-	status       atomic.Value // stores string
-	latestQR     atomic.Value // stores string (latest QR code data)
-	phoneNum     string
-	dataDir      string
-	allowedUsers map[string]bool
-	pendingDMs   map[string]WhatsAppPendingApproval
-	stateMu      sync.RWMutex
-	cancel       context.CancelFunc
+	cfg       config.WhatsAppChannelConfig
+	store     *state.Store
+	client    *whatsmeow.Client
+	container *sqlstore.Container
+	bus       *bus.Bus
+	qrChan    <-chan whatsmeow.QRChannelItem
+	status    atomic.Value // stores string
+	latestQR  atomic.Value // stores string (latest QR code data)
+	phoneNum  string
+	dataDir   string
+	stateMu   sync.RWMutex // protects cfg and phoneNum
+	cancel    context.CancelFunc
 }
 
 // NewWhatsAppChannel creates a new WhatsAppChannel.
-func NewWhatsAppChannel(cfg config.WhatsAppChannelConfig, dataDir string) *WhatsAppChannel {
-	allowed := make(map[string]bool, len(cfg.AllowedUsers))
-	for _, u := range cfg.AllowedUsers {
-		allowed[u] = true
-	}
+func NewWhatsAppChannel(cfg config.WhatsAppChannelConfig, dataDir string, store *state.Store) *WhatsAppChannel {
 	ch := &WhatsAppChannel{
-		cfg:          cfg,
-		dataDir:      dataDir,
-		allowedUsers: allowed,
-		pendingDMs:   make(map[string]WhatsAppPendingApproval),
+		cfg:     cfg,
+		dataDir: dataDir,
+		store:   store,
 	}
 	ch.status.Store("disconnected")
 	return ch
@@ -286,24 +280,27 @@ func (w *WhatsAppChannel) Stop() error {
 // isAllowed checks if a sender JID is in the allowlist.
 func (w *WhatsAppChannel) isAllowed(senderJID types.JID) bool {
 	w.stateMu.RLock()
-	defer w.stateMu.RUnlock()
+	groupPolicy := w.cfg.GroupPolicy
+	w.stateMu.RUnlock()
 
-	if w.cfg.GroupPolicy == "allowlist" {
-		return w.allowedUsers[senderJID.User]
+	ok, _ := w.store.IsAllowed("whatsapp", senderJID.User)
+	if groupPolicy == "allowlist" {
+		return ok
 	}
-	if len(w.allowedUsers) == 0 {
+	if ok {
 		return true
 	}
-	return w.allowedUsers[senderJID.User]
+	users, _ := w.store.AllowedUsers("whatsapp")
+	return len(users) == 0
 }
 
 func (w *WhatsAppChannel) isGroupUserAllowed(senderID string) bool {
-	w.stateMu.RLock()
-	defer w.stateMu.RUnlock()
-	if len(w.allowedUsers) == 0 {
+	ok, _ := w.store.IsAllowed("whatsapp", senderID)
+	if ok {
 		return true
 	}
-	return w.allowedUsers[senderID]
+	users, _ := w.store.AllowedUsers("whatsapp")
+	return len(users) == 0
 }
 
 func (w *WhatsAppChannel) recordPendingDM(userID, username, content string, at time.Time) {
@@ -322,52 +319,43 @@ func (w *WhatsAppChannel) recordPendingDM(userID, username, content string, at t
 		at = time.Now()
 	}
 
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
-	existing, ok := w.pendingDMs[userID]
-	if !ok {
-		w.pendingDMs[userID] = WhatsAppPendingApproval{
-			UserID:       userID,
-			Username:     strings.TrimSpace(username),
-			Preview:      preview,
-			MessageCount: 1,
-			FirstSeenAt:  at,
-			LastSeenAt:   at,
-		}
-		return
-	}
-
-	if strings.TrimSpace(username) != "" {
-		existing.Username = strings.TrimSpace(username)
-	}
-	existing.Preview = preview
-	existing.MessageCount++
-	existing.LastSeenAt = at
-	w.pendingDMs[userID] = existing
+	w.store.UpsertPending("whatsapp", state.PendingApproval{
+		UserID:      userID,
+		Username:    strings.TrimSpace(username),
+		Preview:     preview,
+		FirstSeenAt: at,
+		LastSeenAt:  at,
+	})
 }
 
 // Snapshot returns a thread-safe snapshot for WhatsApp admin APIs.
 func (w *WhatsAppChannel) Snapshot() WhatsAppAdminState {
 	w.stateMu.RLock()
-	defer w.stateMu.RUnlock()
+	groupPolicy := w.cfg.GroupPolicy
+	dmPolicy := w.cfg.DM.Policy
+	w.stateMu.RUnlock()
 
-	allowed := make([]string, 0, len(w.allowedUsers))
-	for id := range w.allowedUsers {
-		allowed = append(allowed, id)
+	allowed, _ := w.store.AllowedUsers("whatsapp")
+	if allowed == nil {
+		allowed = []string{}
 	}
-	sort.Strings(allowed)
 
-	pending := make([]WhatsAppPendingApproval, 0, len(w.pendingDMs))
-	for _, p := range w.pendingDMs {
-		pending = append(pending, p)
+	rawPending, _ := w.store.PendingApprovals("whatsapp")
+	pending := make([]WhatsAppPendingApproval, 0, len(rawPending))
+	for _, p := range rawPending {
+		pending = append(pending, WhatsAppPendingApproval{
+			UserID:       p.UserID,
+			Username:     p.Username,
+			Preview:      p.Preview,
+			MessageCount: p.MessageCount,
+			FirstSeenAt:  p.FirstSeenAt,
+			LastSeenAt:   p.LastSeenAt,
+		})
 	}
-	sort.Slice(pending, func(i, j int) bool {
-		return pending[i].LastSeenAt.After(pending[j].LastSeenAt)
-	})
 
 	return WhatsAppAdminState{
-		GroupPolicy:  w.cfg.GroupPolicy,
-		DMPolicy:     w.cfg.DM.Policy,
+		GroupPolicy:  groupPolicy,
+		DMPolicy:     dmPolicy,
 		AllowedUsers: allowed,
 		Pending:      pending,
 		Status:       w.Status(),
@@ -376,26 +364,12 @@ func (w *WhatsAppChannel) Snapshot() WhatsAppAdminState {
 	}
 }
 
-// ApplyConfig updates runtime WhatsApp policy and allowlist without restart.
+// ApplyConfig updates runtime WhatsApp policy without restart.
+// Only static config (policies) is updated here; allowlist is in the store.
 func (w *WhatsAppChannel) ApplyConfig(cfg config.WhatsAppChannelConfig) {
-	allowed := make(map[string]bool, len(cfg.AllowedUsers))
-	for _, u := range cfg.AllowedUsers {
-		id := strings.TrimSpace(u)
-		if id != "" {
-			allowed[id] = true
-		}
-	}
-
 	w.stateMu.Lock()
 	defer w.stateMu.Unlock()
-
 	w.cfg = cfg
-	w.allowedUsers = allowed
-	for id := range w.pendingDMs {
-		if allowed[id] {
-			delete(w.pendingDMs, id)
-		}
-	}
 }
 
 // ApproveUser adds a user to allowlist and removes any pending approval entry.
@@ -405,22 +379,8 @@ func (w *WhatsAppChannel) ApproveUser(userID string) bool {
 		return false
 	}
 
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
-	w.allowedUsers[id] = true
-	delete(w.pendingDMs, id)
-
-	exists := false
-	for _, u := range w.cfg.AllowedUsers {
-		if strings.TrimSpace(u) == id {
-			exists = true
-			break
-		}
-	}
-	if !exists {
-		w.cfg.AllowedUsers = append(w.cfg.AllowedUsers, id)
-	}
-
+	w.store.AddAllowedUser("whatsapp", id)
+	w.store.DeletePending("whatsapp", id)
 	return true
 }
 
@@ -431,10 +391,15 @@ func (w *WhatsAppChannel) RejectUser(userID string) bool {
 		return false
 	}
 
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
-	_, existed := w.pendingDMs[id]
-	delete(w.pendingDMs, id)
+	pending, _ := w.store.PendingApprovals("whatsapp")
+	existed := false
+	for _, p := range pending {
+		if p.UserID == id {
+			existed = true
+			break
+		}
+	}
+	w.store.DeletePending("whatsapp", id)
 	return existed
 }
 
@@ -445,18 +410,9 @@ func (w *WhatsAppChannel) RemoveUser(userID string) bool {
 		return false
 	}
 
-	w.stateMu.Lock()
-	defer w.stateMu.Unlock()
-	delete(w.allowedUsers, id)
-
-	newList := make([]string, 0, len(w.cfg.AllowedUsers))
-	for _, u := range w.cfg.AllowedUsers {
-		if strings.TrimSpace(u) != id {
-			newList = append(newList, u)
-		}
+	if err := w.store.RemoveAllowedUser("whatsapp", id); err != nil {
+		return false
 	}
-	w.cfg.AllowedUsers = newList
-
 	return true
 }
 

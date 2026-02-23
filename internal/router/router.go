@@ -2,45 +2,17 @@ package router
 
 import (
 	"github.com/eazyclaw/eazyclaw/internal/bus"
-	"github.com/eazyclaw/eazyclaw/internal/config"
+	"github.com/eazyclaw/eazyclaw/internal/state"
 )
 
 // Router determines session routing and access control for inbound messages.
 type Router struct {
-	allowedUsers map[string]map[string]bool // channel -> set of allowed user IDs
+	store *state.Store
 }
 
-// NewRouter creates a new Router from channel configuration.
-func NewRouter(cfg config.ChannelsConfig) *Router {
-	allowed := make(map[string]map[string]bool)
-
-	if len(cfg.Telegram.AllowedUsers) > 0 {
-		m := make(map[string]bool, len(cfg.Telegram.AllowedUsers))
-		for _, u := range cfg.Telegram.AllowedUsers {
-			m[u] = true
-		}
-		allowed["telegram"] = m
-	}
-
-	if len(cfg.Discord.AllowedUsers) > 0 {
-		m := make(map[string]bool, len(cfg.Discord.AllowedUsers))
-		for _, u := range cfg.Discord.AllowedUsers {
-			m[u] = true
-		}
-		allowed["discord"] = m
-	}
-
-	if len(cfg.WhatsApp.AllowedUsers) > 0 {
-		m := make(map[string]bool, len(cfg.WhatsApp.AllowedUsers))
-		for _, u := range cfg.WhatsApp.AllowedUsers {
-			m[u] = true
-		}
-		allowed["whatsapp"] = m
-	}
-
-	return &Router{
-		allowedUsers: allowed,
-	}
+// NewRouter creates a new Router backed by a state store.
+func NewRouter(store *state.Store) *Router {
+	return &Router{store: store}
 }
 
 // SessionID returns a unique session identifier for a message.
@@ -55,14 +27,23 @@ func (r *Router) SessionID(msg bus.Message) string {
 // IsAllowed checks whether the sender of a message is permitted.
 // If no allowlist is configured for the channel, all users are allowed.
 func (r *Router) IsAllowed(msg bus.Message) bool {
-	userSet, exists := r.allowedUsers[msg.ChannelID]
-	if !exists {
-		// No allowlist for this channel means all users are allowed.
-		return true
-	}
 	userID := msg.UserID
 	if userID == "" {
 		userID = msg.SenderID
 	}
-	return userSet[userID]
+
+	ok, err := r.store.IsAllowed(msg.ChannelID, userID)
+	if err != nil {
+		return false
+	}
+	if ok {
+		return true
+	}
+
+	// Empty allowlist means allow all.
+	users, err := r.store.AllowedUsers(msg.ChannelID)
+	if err != nil {
+		return false
+	}
+	return len(users) == 0
 }

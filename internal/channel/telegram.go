@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/eazyclaw/eazyclaw/internal/bus"
 	"github.com/eazyclaw/eazyclaw/internal/config"
+	"github.com/eazyclaw/eazyclaw/internal/state"
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 )
@@ -38,28 +38,22 @@ type TelegramAdminState struct {
 
 // TelegramChannel integrates with the Telegram Bot API.
 type TelegramChannel struct {
-	token        string
-	cfg          config.TelegramChannelConfig
-	allowedUsers map[string]bool
-	bot          *bot.Bot
-	bus          *bus.Bus
-	cancel       context.CancelFunc
-	botUsername   string
-	stateMu      sync.RWMutex
-	pendingDMs   map[string]TelegramPendingApproval
+	token       string
+	cfg         config.TelegramChannelConfig
+	store       *state.Store
+	bot         *bot.Bot
+	bus         *bus.Bus
+	cancel      context.CancelFunc
+	botUsername string
+	stateMu     sync.RWMutex // protects cfg only
 }
 
 // NewTelegramChannel creates a new TelegramChannel.
-func NewTelegramChannel(token string, cfg config.TelegramChannelConfig) *TelegramChannel {
-	allowed := make(map[string]bool, len(cfg.AllowedUsers))
-	for _, u := range cfg.AllowedUsers {
-		allowed[u] = true
-	}
+func NewTelegramChannel(token string, cfg config.TelegramChannelConfig, store *state.Store) *TelegramChannel {
 	return &TelegramChannel{
-		token:        token,
-		cfg:          cfg,
-		allowedUsers: allowed,
-		pendingDMs:   make(map[string]TelegramPendingApproval),
+		token: token,
+		cfg:   cfg,
+		store: store,
 	}
 }
 
@@ -243,24 +237,27 @@ func (t *TelegramChannel) Stop() error {
 // In allowlist mode, DMs are denied unless sender is explicitly allowlisted.
 func (t *TelegramChannel) isDMUserAllowed(senderID string) bool {
 	t.stateMu.RLock()
-	defer t.stateMu.RUnlock()
+	groupPolicy := t.cfg.GroupPolicy
+	t.stateMu.RUnlock()
 
-	if t.cfg.GroupPolicy == "allowlist" {
-		return t.allowedUsers[senderID]
+	ok, _ := t.store.IsAllowed("telegram", senderID)
+	if groupPolicy == "allowlist" {
+		return ok
 	}
-	if len(t.allowedUsers) == 0 {
+	if ok {
 		return true
 	}
-	return t.allowedUsers[senderID]
+	users, _ := t.store.AllowedUsers("telegram")
+	return len(users) == 0
 }
 
 func (t *TelegramChannel) isGroupUserAllowed(senderID string) bool {
-	t.stateMu.RLock()
-	defer t.stateMu.RUnlock()
-	if len(t.allowedUsers) == 0 {
+	ok, _ := t.store.IsAllowed("telegram", senderID)
+	if ok {
 		return true
 	}
-	return t.allowedUsers[senderID]
+	users, _ := t.store.AllowedUsers("telegram")
+	return len(users) == 0
 }
 
 func (t *TelegramChannel) recordPendingDM(userID, username, content string, at time.Time) {
@@ -279,77 +276,54 @@ func (t *TelegramChannel) recordPendingDM(userID, username, content string, at t
 		at = time.Now()
 	}
 
-	t.stateMu.Lock()
-	defer t.stateMu.Unlock()
-	existing, ok := t.pendingDMs[userID]
-	if !ok {
-		t.pendingDMs[userID] = TelegramPendingApproval{
-			UserID:       userID,
-			Username:     strings.TrimSpace(username),
-			Preview:      preview,
-			MessageCount: 1,
-			FirstSeenAt:  at,
-			LastSeenAt:   at,
-		}
-		return
-	}
-
-	if strings.TrimSpace(username) != "" {
-		existing.Username = strings.TrimSpace(username)
-	}
-	existing.Preview = preview
-	existing.MessageCount++
-	existing.LastSeenAt = at
-	t.pendingDMs[userID] = existing
+	t.store.UpsertPending("telegram", state.PendingApproval{
+		UserID:      userID,
+		Username:    strings.TrimSpace(username),
+		Preview:     preview,
+		FirstSeenAt: at,
+		LastSeenAt:  at,
+	})
 }
 
 // Snapshot returns a thread-safe snapshot for Telegram admin APIs.
 func (t *TelegramChannel) Snapshot() TelegramAdminState {
 	t.stateMu.RLock()
-	defer t.stateMu.RUnlock()
+	groupPolicy := t.cfg.GroupPolicy
+	dmPolicy := t.cfg.DM.Policy
+	t.stateMu.RUnlock()
 
-	allowed := make([]string, 0, len(t.allowedUsers))
-	for id := range t.allowedUsers {
-		allowed = append(allowed, id)
+	allowed, _ := t.store.AllowedUsers("telegram")
+	if allowed == nil {
+		allowed = []string{}
 	}
-	sort.Strings(allowed)
 
-	pending := make([]TelegramPendingApproval, 0, len(t.pendingDMs))
-	for _, p := range t.pendingDMs {
-		pending = append(pending, p)
+	rawPending, _ := t.store.PendingApprovals("telegram")
+	pending := make([]TelegramPendingApproval, 0, len(rawPending))
+	for _, p := range rawPending {
+		pending = append(pending, TelegramPendingApproval{
+			UserID:       p.UserID,
+			Username:     p.Username,
+			Preview:      p.Preview,
+			MessageCount: p.MessageCount,
+			FirstSeenAt:  p.FirstSeenAt,
+			LastSeenAt:   p.LastSeenAt,
+		})
 	}
-	sort.Slice(pending, func(i, j int) bool {
-		return pending[i].LastSeenAt.After(pending[j].LastSeenAt)
-	})
 
 	return TelegramAdminState{
-		GroupPolicy:  t.cfg.GroupPolicy,
-		DMPolicy:     t.cfg.DM.Policy,
+		GroupPolicy:  groupPolicy,
+		DMPolicy:     dmPolicy,
 		AllowedUsers: allowed,
 		Pending:      pending,
 	}
 }
 
-// ApplyConfig updates runtime Telegram policy and allowlist without restart.
+// ApplyConfig updates runtime Telegram policy without restart.
+// Only static config (policies, chats) is updated here; allowlist is in the store.
 func (t *TelegramChannel) ApplyConfig(cfg config.TelegramChannelConfig) {
-	allowed := make(map[string]bool, len(cfg.AllowedUsers))
-	for _, u := range cfg.AllowedUsers {
-		id := strings.TrimSpace(u)
-		if id != "" {
-			allowed[id] = true
-		}
-	}
-
 	t.stateMu.Lock()
 	defer t.stateMu.Unlock()
-
 	t.cfg = cfg
-	t.allowedUsers = allowed
-	for id := range t.pendingDMs {
-		if allowed[id] {
-			delete(t.pendingDMs, id)
-		}
-	}
 }
 
 // ApproveUser adds a user to allowlist and removes any pending approval entry.
@@ -359,22 +333,8 @@ func (t *TelegramChannel) ApproveUser(userID string) bool {
 		return false
 	}
 
-	t.stateMu.Lock()
-	defer t.stateMu.Unlock()
-	t.allowedUsers[id] = true
-	delete(t.pendingDMs, id)
-
-	exists := false
-	for _, u := range t.cfg.AllowedUsers {
-		if strings.TrimSpace(u) == id {
-			exists = true
-			break
-		}
-	}
-	if !exists {
-		t.cfg.AllowedUsers = append(t.cfg.AllowedUsers, id)
-	}
-
+	t.store.AddAllowedUser("telegram", id)
+	t.store.DeletePending("telegram", id)
 	return true
 }
 
@@ -385,10 +345,15 @@ func (t *TelegramChannel) RejectUser(userID string) bool {
 		return false
 	}
 
-	t.stateMu.Lock()
-	defer t.stateMu.Unlock()
-	_, existed := t.pendingDMs[id]
-	delete(t.pendingDMs, id)
+	pending, _ := t.store.PendingApprovals("telegram")
+	existed := false
+	for _, p := range pending {
+		if p.UserID == id {
+			existed = true
+			break
+		}
+	}
+	t.store.DeletePending("telegram", id)
 	return existed
 }
 

@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/eazyclaw/eazyclaw/internal/bus"
-	"github.com/eazyclaw/eazyclaw/internal/config"
 	providerPkg "github.com/eazyclaw/eazyclaw/internal/provider"
 	"github.com/eazyclaw/eazyclaw/internal/router"
+	"github.com/eazyclaw/eazyclaw/internal/state"
 	"github.com/eazyclaw/eazyclaw/internal/tool"
 )
 
@@ -97,7 +97,12 @@ func TestAgentLoopCompactionAndMemoryFlush(t *testing.T) {
 	ctxBuilder.SetToolDescriptions(toolReg.Descriptions())
 
 	store := NewSessionStore(sessionsDir)
-	r := router.NewRouter(config.ChannelsConfig{})
+	stateStore, err := state.OpenPath(":memory:")
+	if err != nil {
+		t.Fatalf("open state store: %v", err)
+	}
+	defer stateStore.Close()
+	r := router.NewRouter(stateStore)
 	loop := NewAgentLoop(msgBus, reg, toolReg, store, ctxBuilder, mm, r)
 
 	sessionID := "telegram:user-1"
@@ -196,7 +201,12 @@ func TestAgentLoopNoReplySuppressed(t *testing.T) {
 	ctxBuilder.SetToolDescriptions(toolReg.Descriptions())
 
 	store := NewSessionStore(sessionsDir)
-	r := router.NewRouter(config.ChannelsConfig{})
+	stateStore, err := state.OpenPath(":memory:")
+	if err != nil {
+		t.Fatalf("open state store: %v", err)
+	}
+	defer stateStore.Close()
+	r := router.NewRouter(stateStore)
 	loop := NewAgentLoop(msgBus, reg, toolReg, store, ctxBuilder, mm, r)
 
 	loop.handleMessage(context.Background(), bus.Message{
@@ -252,7 +262,12 @@ func TestAgentLoopInjectsRuntimeSnapshotInPrompt(t *testing.T) {
 	ctxBuilder.SetToolDescriptions(toolReg.Descriptions())
 
 	store := NewSessionStore(sessionsDir)
-	r := router.NewRouter(config.ChannelsConfig{})
+	stateStore, err := state.OpenPath(":memory:")
+	if err != nil {
+		t.Fatalf("open state store: %v", err)
+	}
+	defer stateStore.Close()
+	r := router.NewRouter(stateStore)
 	loop := NewAgentLoop(msgBus, reg, toolReg, store, ctxBuilder, mm, r)
 
 	loop.handleMessage(context.Background(), bus.Message{
@@ -416,7 +431,12 @@ func TestCompaction_FailedSummaryDoesNotWipeChat(t *testing.T) {
 	ctxBuilder.SetToolDescriptions(toolReg.Descriptions())
 
 	store := NewSessionStore(sessionsDir)
-	r := router.NewRouter(config.ChannelsConfig{})
+	stateStore, err := state.OpenPath(":memory:")
+	if err != nil {
+		t.Fatalf("open state store: %v", err)
+	}
+	defer stateStore.Close()
+	r := router.NewRouter(stateStore)
 	loop := NewAgentLoop(msgBus, reg, toolReg, store, ctxBuilder, mm, r)
 
 	sessionID := "telegram:user-fail"
