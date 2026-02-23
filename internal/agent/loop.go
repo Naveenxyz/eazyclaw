@@ -3,13 +3,13 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"strings"
-	"time"
 	"github.com/eazyclaw/eazyclaw/internal/bus"
 	providerPkg "github.com/eazyclaw/eazyclaw/internal/provider"
 	"github.com/eazyclaw/eazyclaw/internal/router"
 	"github.com/eazyclaw/eazyclaw/internal/tool"
+	"log/slog"
+	"strings"
+	"time"
 )
 
 const defaultMaxIterations = 20
@@ -191,6 +191,7 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 	remainingBeforeLimit = remainingTokens(contextWindowTokens, actualTokens)
 	systemPrompt = a.context.BuildFor(PromptContext{
 		SessionID:                sessionID,
+		Channel:                  msg.ChannelID,
 		IsDirect:                 isDirect,
 		IsHeartbeat:              isHeartbeat,
 		Now:                      msg.Timestamp,
@@ -479,8 +480,22 @@ func (a *AgentLoop) runCompactionIfNeeded(
 
 	// Use actual provider-reported tokens. 0 = unknown.
 	actualTokens := session.LastPromptTokens
+	tokenTrigger := actualTokens > 0 && a.memory.ShouldCompactByTokens(actualTokens)
+	messageTrigger := a.memory.ShouldCompact(len(session.Messages))
+	compactionNeeded := tokenTrigger || messageTrigger
 
-	if !isHeartbeat && actualTokens > 0 && a.memory.ShouldFlushBeforeCompaction(actualTokens, session) {
+	shouldFlush := false
+	if !isHeartbeat {
+		if actualTokens > 0 {
+			shouldFlush = a.memory.ShouldFlushBeforeCompaction(actualTokens, session)
+		} else if compactionNeeded && a.memory.PreCompactionFlushEnabled() {
+			// When token telemetry is not yet available, run one pre-compaction flush
+			// if compaction is already required by message count.
+			shouldFlush = session.MemoryFlushCompactionCount == nil || *session.MemoryFlushCompactionCount != session.CompactionCount
+		}
+	}
+
+	if shouldFlush {
 		flushPrompt := a.memory.BuildPreCompactionFlushPrompt(now)
 		flushMessages := CloneMessages(session.Messages)
 		flushMessages = append(flushMessages, providerPkg.Message{
@@ -508,8 +523,7 @@ func (a *AgentLoop) runCompactionIfNeeded(
 	}
 
 	// Trigger compaction on message count (always) or actual tokens (when known).
-	tokenTrigger := actualTokens > 0 && a.memory.ShouldCompactByTokens(actualTokens)
-	if !(tokenTrigger || a.memory.ShouldCompact(len(session.Messages))) {
+	if !compactionNeeded {
 		return nil
 	}
 
@@ -707,6 +721,7 @@ func buildRuntimeSnapshotPrompt(
 	if actualInputTokens > 0 {
 		// Real token count from provider API.
 		sb.WriteString(fmt.Sprintf("- Input tokens (actual): %d\n", actualInputTokens))
+		sb.WriteString(fmt.Sprintf("- Estimated input tokens this call: %d (actual)\n", actualInputTokens))
 		if contextWindowTokens > 0 {
 			remaining := remainingTokens(contextWindowTokens, actualInputTokens)
 			sb.WriteString(fmt.Sprintf("- Context window: %d tokens\n", contextWindowTokens))
@@ -716,6 +731,7 @@ func buildRuntimeSnapshotPrompt(
 		// No actual data yet — show rough estimate labeled as such.
 		est := roughTokenEstimate(history) + roughToolDefTokens(toolDefs)
 		sb.WriteString(fmt.Sprintf("- Input tokens (rough estimate): ~%d\n", est))
+		sb.WriteString(fmt.Sprintf("- Estimated input tokens this call: ~%d (rough)\n", est))
 		if contextWindowTokens > 0 {
 			remaining := remainingTokens(contextWindowTokens, est)
 			sb.WriteString(fmt.Sprintf("- Context window: %d tokens\n", contextWindowTokens))
@@ -724,7 +740,6 @@ func buildRuntimeSnapshotPrompt(
 	}
 	return sb.String()
 }
-
 
 func (a *AgentLoop) generateCompactionSummary(
 	ctx context.Context,

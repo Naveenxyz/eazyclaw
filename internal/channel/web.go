@@ -9,7 +9,9 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,10 +29,6 @@ import (
 	"github.com/eazyclaw/eazyclaw/internal/state"
 	"github.com/eazyclaw/eazyclaw/internal/tool"
 )
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
 
 const sessionCookieName = "eazyclaw_session"
 const sessionExpiry = 24 * time.Hour
@@ -333,6 +331,83 @@ func isSecureRequest(r *http.Request) bool {
 	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
+func parseHostPort(hostport string) (string, string) {
+	hostport = strings.TrimSpace(hostport)
+	if hostport == "" {
+		return "", ""
+	}
+
+	if i := strings.IndexByte(hostport, ','); i >= 0 {
+		hostport = strings.TrimSpace(hostport[:i])
+	}
+
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return strings.ToLower(hostport), ""
+	}
+	return strings.ToLower(host), port
+}
+
+func requestHostPort(r *http.Request) (string, string) {
+	hostport := r.Header.Get("X-Forwarded-Host")
+	if hostport == "" {
+		hostport = r.Host
+	}
+	host, port := parseHostPort(hostport)
+	if host == "" {
+		return "", ""
+	}
+	if port == "" {
+		if isSecureRequest(r) {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return host, port
+}
+
+func originHostPort(origin string) (string, string, bool) {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return "", "", false
+	}
+	if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		return "", "", false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return "", "", false
+	}
+	port := u.Port()
+	if port == "" {
+		if strings.EqualFold(u.Scheme, "https") {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return host, port, true
+}
+
+func allowWSOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		// Non-browser clients may not send Origin.
+		return true
+	}
+
+	originHost, originPort, ok := originHostPort(origin)
+	if !ok {
+		return false
+	}
+	reqHost, reqPort := requestHostPort(r)
+	if reqHost == "" || reqPort == "" {
+		return false
+	}
+	return originHost == reqHost && originPort == reqPort
+}
+
 // handleAPILogin validates the password and sets a session cookie.
 func (w *WebChannel) handleAPILogin(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -456,6 +531,9 @@ func (w *WebChannel) Stop() error {
 
 // handleWS upgrades to WebSocket and handles bidirectional chat messages.
 func (w *WebChannel) handleWS(rw http.ResponseWriter, r *http.Request) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: allowWSOrigin,
+	}
 	conn, err := upgrader.Upgrade(rw, r, nil)
 	if err != nil {
 		slog.Error("web: ws upgrade failed", "error", err)
