@@ -53,8 +53,7 @@ ENV PATH="/data/eazyclaw/npm/global/bin:/data/eazyclaw/uv/bin:$PATH"
 
 COPY --from=builder /eazyclaw /usr/local/bin/eazyclaw
 COPY config.example.yaml /etc/eazyclaw/config.example.yaml
-COPY AGENTS.md SOUL.md BOOTSTRAP.md IDENTITY.md USER.md HEARTBEAT.md MEMORY.md /defaults/
-COPY skills/ /defaults/skills/
+COPY defaults/ /defaults/
 COPY supervisord.conf /etc/supervisor/conf.d/eazyclaw.conf
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 RUN rm -f /etc/nginx/sites-enabled/default

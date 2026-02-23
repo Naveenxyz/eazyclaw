@@ -25,32 +25,32 @@ fi
 
 # Seed default memory bootstrap files (all visible in Memory Explorer).
 if [ ! -f "${MEMORY_DIR}/AGENTS.md" ]; then
-  cp /defaults/AGENTS.md "${MEMORY_DIR}/AGENTS.md"
+  cp /defaults/memory/AGENTS.md "${MEMORY_DIR}/AGENTS.md"
   echo "Created default AGENTS.md at ${MEMORY_DIR}/AGENTS.md"
 fi
 
 if [ ! -f "${MEMORY_DIR}/SOUL.md" ]; then
-  cp /defaults/SOUL.md "${MEMORY_DIR}/SOUL.md"
+  cp /defaults/memory/SOUL.md "${MEMORY_DIR}/SOUL.md"
   echo "Created default SOUL.md at ${MEMORY_DIR}/SOUL.md"
 fi
 
 if [ ! -f "${MEMORY_DIR}/IDENTITY.md" ]; then
-  cp /defaults/IDENTITY.md "${MEMORY_DIR}/IDENTITY.md"
+  cp /defaults/memory/IDENTITY.md "${MEMORY_DIR}/IDENTITY.md"
   echo "Created default IDENTITY.md at ${MEMORY_DIR}/IDENTITY.md"
 fi
 
 if [ ! -f "${MEMORY_DIR}/USER.md" ]; then
-  cp /defaults/USER.md "${MEMORY_DIR}/USER.md"
+  cp /defaults/memory/USER.md "${MEMORY_DIR}/USER.md"
   echo "Created default USER.md at ${MEMORY_DIR}/USER.md"
 fi
 
 if [ ! -f "${MEMORY_DIR}/HEARTBEAT.md" ]; then
-  cp /defaults/HEARTBEAT.md "${MEMORY_DIR}/HEARTBEAT.md"
+  cp /defaults/memory/HEARTBEAT.md "${MEMORY_DIR}/HEARTBEAT.md"
   echo "Created default HEARTBEAT.md at ${MEMORY_DIR}/HEARTBEAT.md"
 fi
 
 if [ ! -f "${MEMORY_DIR}/MEMORY.md" ]; then
-  cp /defaults/MEMORY.md "${MEMORY_DIR}/MEMORY.md"
+  cp /defaults/memory/MEMORY.md "${MEMORY_DIR}/MEMORY.md"
   echo "Created default MEMORY.md at ${MEMORY_DIR}/MEMORY.md"
 fi
 
