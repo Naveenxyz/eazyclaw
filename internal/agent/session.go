@@ -95,6 +95,7 @@ func (s *SessionStore) Save(session *Session) error {
 
 // Trim keeps only the last maxMessages messages in the session.
 // If maxMessages is <= 0, it defaults to 100.
+// After trimming, it sanitizes the result to fix orphaned tool messages.
 func (s *SessionStore) Trim(session *Session, maxMessages int) {
 	if maxMessages <= 0 {
 		maxMessages = 100
@@ -102,6 +103,8 @@ func (s *SessionStore) Trim(session *Session, maxMessages int) {
 	if len(session.Messages) > maxMessages {
 		session.Messages = session.Messages[len(session.Messages)-maxMessages:]
 	}
+	// Sanitize after trimming to repair any orphaned tool call/result pairs.
+	session.Messages, _ = SanitizeMessages(session.Messages)
 }
 
 // SessionSummary holds metadata about a session for listing.
