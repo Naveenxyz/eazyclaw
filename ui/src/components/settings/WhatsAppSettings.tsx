@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Plus, X, Check, Ban, Smartphone, QrCode, Unplug } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import type { WhatsAppAdminState } from "@/types";
 
 interface WhatsAppSettingsProps {
@@ -11,7 +12,7 @@ interface WhatsAppSettingsProps {
   onRemoveUser: (userId: string) => void;
   onPolicyChange: (field: "group_policy" | "dm_policy", value: string) => void;
   pendingActionUserId?: string | null;
-  qrImageUrl?: string | null;
+  qrData?: string | null;
 }
 
 export function WhatsAppSettings({
@@ -23,7 +24,7 @@ export function WhatsAppSettings({
   onRemoveUser,
   onPolicyChange,
   pendingActionUserId,
-  qrImageUrl,
+  qrData,
 }: WhatsAppSettingsProps) {
   const [newUser, setNewUser] = useState("");
 
@@ -67,12 +68,10 @@ export function WhatsAppSettings({
             <div className="flex flex-col items-center gap-3">
               <QrCode size={16} className="text-fg-3" />
               <p className="text-xs text-fg-3">Scan QR code with WhatsApp to pair</p>
-              {qrImageUrl ? (
-                <img
-                  src={qrImageUrl}
-                  alt="WhatsApp QR Code"
-                  className="w-48 h-48 rounded-md border border-edge"
-                />
+              {qrData ? (
+                <div className="p-3 bg-white rounded-md">
+                  <QRCodeSVG value={qrData} size={192} />
+                </div>
               ) : (
                 <div className="w-48 h-48 rounded-md border border-edge bg-base flex items-center justify-center">
                   <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />

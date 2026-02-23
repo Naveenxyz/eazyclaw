@@ -117,7 +117,7 @@ func (w *WhatsAppChannel) Start(ctx context.Context, b *bus.Bus) error {
 			cancel()
 			return fmt.Errorf("whatsapp: failed to connect: %w", err)
 		}
-		w.status.Store("waiting_for_qr")
+		w.status.Store("qr_pending")
 		go w.handleQREvents(ctx)
 	} else {
 		if err := client.Connect(); err != nil {
@@ -144,7 +144,7 @@ func (w *WhatsAppChannel) handleQREvents(ctx context.Context) {
 			}
 			switch evt.Event {
 			case "code":
-				w.status.Store("waiting_for_qr")
+				w.status.Store("qr_pending")
 				w.latestQR.Store(evt.Code)
 				slog.Info("whatsapp: QR code received, scan to authenticate")
 			case "login":
@@ -463,7 +463,7 @@ func (w *WhatsAppChannel) RemoveUser(userID string) bool {
 // QRCode returns the current QR code string if awaiting scan.
 func (w *WhatsAppChannel) QRCode() string {
 	status := w.status.Load().(string)
-	if status != "waiting_for_qr" {
+	if status != "qr_pending" {
 		return ""
 	}
 	if v := w.latestQR.Load(); v != nil {

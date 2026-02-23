@@ -158,10 +158,8 @@ export async function getWhatsAppAdminState(): Promise<WhatsAppAdminState> {
 }
 
 export async function getWhatsAppQR(): Promise<string> {
-  const res = await fetch("/api/whatsapp/qr", { credentials: "include" });
-  if (!res.ok) throw new Error("Failed to get QR code");
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
+  const data = await request<{ qr_code: string }>("/api/whatsapp/qr");
+  return data.qr_code;
 }
 
 export async function disconnectWhatsApp(): Promise<{ status: string }> {

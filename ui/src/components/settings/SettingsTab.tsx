@@ -5,6 +5,7 @@ import {
   getDiscordAdminState,
   getTelegramAdminState,
   getWhatsAppAdminState,
+  getWhatsAppQR,
   getGoogleAuthStatus,
   getGoogleAuthURL,
   putConfig,
@@ -42,6 +43,7 @@ export default function SettingsTab() {
   const [pendingDiscordApprovalUserId, setPendingDiscordApprovalUserId] = useState<string | null>(null);
   const [pendingTelegramApprovalUserId, setPendingTelegramApprovalUserId] = useState<string | null>(null);
   const [pendingWhatsAppApprovalUserId, setPendingWhatsAppApprovalUserId] = useState<string | null>(null);
+  const [whatsappQR, setWhatsappQR] = useState<string | null>(null);
 
   const normalizeConfig = (cfg: ChannelConfig): ChannelConfig => ({
     ...cfg,
@@ -97,6 +99,22 @@ export default function SettingsTab() {
     }, 4000);
     return () => clearInterval(timer);
   }, []);
+
+  // Poll for WhatsApp QR code when status is qr_pending.
+  useEffect(() => {
+    if (whatsappAdmin?.status !== "qr_pending") {
+      setWhatsappQR(null);
+      return;
+    }
+    const fetchQR = () => {
+      getWhatsAppQR()
+        .then((qr) => setWhatsappQR(qr))
+        .catch(() => {});
+    };
+    fetchQR();
+    const timer = setInterval(fetchQR, 5000);
+    return () => clearInterval(timer);
+  }, [whatsappAdmin?.status]);
 
   const handleDiscordChange = useCallback(
     (discord: DiscordChannelConfig) => {
@@ -320,6 +338,7 @@ export default function SettingsTab() {
           onRemoveUser={handleWhatsAppRemoveUser}
           onPolicyChange={handleWhatsAppPolicyChange}
           pendingActionUserId={pendingWhatsAppApprovalUserId}
+          qrData={whatsappQR}
         />
 
         <GoogleSettings

@@ -170,6 +170,7 @@ func (a *AgentLoop) handleMessage(ctx context.Context, msg bus.Message) {
 	// Build system prompt.
 	systemPrompt := a.context.BuildFor(PromptContext{
 		SessionID:                sessionID,
+		Channel:                  msg.ChannelID,
 		IsDirect:                 isDirect,
 		IsHeartbeat:              isHeartbeat,
 		Now:                      msg.Timestamp,
@@ -251,6 +252,7 @@ func (a *AgentLoop) handleCompactCommand(ctx context.Context, session *Session, 
 	isDirect := msg.GroupID == ""
 	systemPrompt := a.context.BuildFor(PromptContext{
 		SessionID:           sessionID,
+		Channel:             msg.ChannelID,
 		IsDirect:            isDirect,
 		Now:                 msg.Timestamp,
 		Provider:            prov.Name(),

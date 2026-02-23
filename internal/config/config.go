@@ -133,7 +133,7 @@ type WhatsAppDMConfig struct {
 
 // WhatsAppChannelConfig holds rich WhatsApp channel settings.
 type WhatsAppChannelConfig struct {
-	Enabled      bool             `yaml:"enabled" envconfig:"WHATSAPP_ENABLED"`
+	Enabled      bool             `yaml:"enabled"`
 	AllowedUsers []string         `yaml:"allowed_users" json:"allowed_users"`
 	GroupPolicy  string           `yaml:"group_policy" json:"group_policy"` // "allowlist" | "open"
 	DM           WhatsAppDMConfig `yaml:"dm" json:"dm"`

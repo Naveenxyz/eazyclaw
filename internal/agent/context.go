@@ -28,6 +28,7 @@ type ContextBuilder struct {
 // PromptContext carries per-turn details used when building the system prompt.
 type PromptContext struct {
 	SessionID                string
+	Channel                  string // "discord", "telegram", "whatsapp", "web", "heartbeat"
 	IsDirect                 bool
 	IsHeartbeat              bool
 	Now                      time.Time
@@ -308,6 +309,9 @@ func (cb *ContextBuilder) buildRuntimeInfo(sb *strings.Builder, ctx PromptContex
 	sb.WriteString(fmt.Sprintf("- Current time: %s\n", ctx.Now.Format(time.RFC3339)))
 	if ctx.SessionID != "" {
 		sb.WriteString(fmt.Sprintf("- Session ID: %s\n", ctx.SessionID))
+	}
+	if ctx.Channel != "" {
+		sb.WriteString(fmt.Sprintf("- Channel: %s\n", ctx.Channel))
 	}
 	if ctx.IsDirect {
 		sb.WriteString("- Chat type: direct\n")
