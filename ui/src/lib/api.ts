@@ -128,15 +128,34 @@ export async function getCronJobs(): Promise<CronJob[]> {
   return request("/api/cron");
 }
 
-export async function addCronJob(schedule: string, task: string): Promise<{ id: string; status: string }> {
+export async function addCronJob(
+  schedule: string,
+  task: string,
+  deliveryChannel?: string,
+  deliveryChatID?: string
+): Promise<{ id: string; status: string }> {
   return request("/api/cron", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ schedule, task }),
+    body: JSON.stringify({
+      schedule,
+      task,
+      ...(deliveryChannel !== undefined ? { delivery_channel: deliveryChannel } : {}),
+      ...(deliveryChatID !== undefined ? { delivery_chat_id: deliveryChatID } : {}),
+    }),
   });
 }
 
-export async function updateCronJob(id: string, data: { schedule?: string; task?: string; enabled?: boolean }): Promise<{ id: string; status: string }> {
+export async function updateCronJob(
+  id: string,
+  data: {
+    schedule?: string;
+    task?: string;
+    enabled?: boolean;
+    delivery_channel?: string;
+    delivery_chat_id?: string;
+  }
+): Promise<{ id: string; status: string }> {
   return request(`/api/cron/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },

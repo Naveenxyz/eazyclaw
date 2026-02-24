@@ -9,9 +9,13 @@ type Message struct {
 	SenderID  string // platform-specific user ID
 	UserID    string // stable author ID when SenderID carries a chat/channel ID
 	GroupID   string // empty for DMs
-	Text      string
-	Timestamp time.Time
-	ReplyTo   string // message ID being replied to
+	// ReplyChannelID/ReplyChatID override where assistant replies are delivered.
+	// Used by synthetic internal messages (cron/heartbeat) to route output outward.
+	ReplyChannelID string
+	ReplyChatID    string
+	Text           string
+	Timestamp      time.Time
+	ReplyTo        string // message ID being replied to
 }
 
 // OutboundMessage represents a message to send back through a channel.

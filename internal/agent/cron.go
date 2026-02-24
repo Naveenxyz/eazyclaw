@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +44,9 @@ func (cr *CronRunner) loadJobs() {
 }
 
 func (cr *CronRunner) saveJobs() error {
+	if err := os.MkdirAll(filepath.Dir(cr.jobsPath), 0o755); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(cr.jobs, "", "  ")
 	if err != nil {
 		return err
@@ -49,21 +54,27 @@ func (cr *CronRunner) saveJobs() error {
 	return os.WriteFile(cr.jobsPath, data, 0644)
 }
 
-func (cr *CronRunner) AddJob(schedule, task string) (string, error) {
-	nextRun, err := nextRunTime(schedule)
+func (cr *CronRunner) AddJob(schedule, task, deliveryChannel, deliveryChatID string) (string, error) {
+	nextRun, err := nextRunTimeFrom(schedule, time.Now())
 	if err != nil {
 		return "", fmt.Errorf("invalid schedule %q: %w", schedule, err)
+	}
+	deliveryChannel, deliveryChatID, err = normalizeCronDeliveryTarget(deliveryChannel, deliveryChatID)
+	if err != nil {
+		return "", err
 	}
 
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
 
 	job := tool.CronJob{
-		ID:       uuid.New().String(),
-		Schedule: schedule,
-		Task:     task,
-		Enabled:  true,
-		NextRun:  nextRun,
+		ID:              uuid.New().String(),
+		Schedule:        schedule,
+		Task:            task,
+		DeliveryChannel: deliveryChannel,
+		DeliveryChatID:  deliveryChatID,
+		Enabled:         true,
+		NextRun:         nextRun,
 	}
 	cr.jobs = append(cr.jobs, job)
 	if err := cr.saveJobs(); err != nil {
@@ -93,14 +104,14 @@ func (cr *CronRunner) ListJobs() []tool.CronJob {
 	return out
 }
 
-func (cr *CronRunner) UpdateJob(id, schedule, task string, enabled bool) error {
+func (cr *CronRunner) UpdateJob(id, schedule, task string, enabled bool, deliveryChannel, deliveryChatID *string) error {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
 
 	for i, j := range cr.jobs {
 		if j.ID == id {
 			if schedule != "" {
-				next, err := nextRunTime(schedule)
+				next, err := nextRunTimeFrom(schedule, time.Now())
 				if err != nil {
 					return fmt.Errorf("invalid schedule %q: %w", schedule, err)
 				}
@@ -109,6 +120,21 @@ func (cr *CronRunner) UpdateJob(id, schedule, task string, enabled bool) error {
 			}
 			if task != "" {
 				cr.jobs[i].Task = task
+			}
+			if deliveryChannel != nil || deliveryChatID != nil {
+				var channelValue, chatValue string
+				if deliveryChannel != nil {
+					channelValue = *deliveryChannel
+				}
+				if deliveryChatID != nil {
+					chatValue = *deliveryChatID
+				}
+				normalizedChannel, normalizedChat, err := normalizeCronDeliveryTarget(channelValue, chatValue)
+				if err != nil {
+					return err
+				}
+				cr.jobs[i].DeliveryChannel = normalizedChannel
+				cr.jobs[i].DeliveryChatID = normalizedChat
 			}
 			cr.jobs[i].Enabled = enabled
 			return cr.saveJobs()
@@ -121,6 +147,7 @@ func (cr *CronRunner) UpdateJob(id, schedule, task string, enabled bool) error {
 func (cr *CronRunner) Start(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
+	cr.tick()
 
 	for {
 		select {
@@ -134,10 +161,9 @@ func (cr *CronRunner) Start(ctx context.Context) {
 
 func (cr *CronRunner) tick() {
 	cr.mu.Lock()
-	defer cr.mu.Unlock()
-
 	now := time.Now()
 	changed := false
+	dueMessages := make([]bus.Message, 0)
 
 	for i := range cr.jobs {
 		j := &cr.jobs[i]
@@ -145,20 +171,31 @@ func (cr *CronRunner) tick() {
 			continue
 		}
 
-		cr.bus.Inbound <- bus.Message{
-			ID:        uuid.New().String(),
-			ChannelID: "cron",
-			SenderID:  "cron",
-			Text:      j.Task,
-			Timestamp: now,
-		}
+		dueMessages = append(dueMessages, bus.Message{
+			ID:             uuid.New().String(),
+			ChannelID:      "cron",
+			SenderID:       j.ID,
+			UserID:         "cron",
+			ReplyChannelID: j.DeliveryChannel,
+			ReplyChatID:    j.DeliveryChatID,
+			Text:           j.Task,
+			Timestamp:      now,
+		})
 
 		j.LastRun = now
-		next, err := nextRunTime(j.Schedule)
+		next, err := nextRunTimeFrom(j.Schedule, j.NextRun)
 		if err != nil {
 			log.Printf("cron: bad schedule for job %s: %v", j.ID, err)
 			j.Enabled = false
 		} else {
+			for !next.After(now) {
+				next = nextRunTimeOrZero(j.Schedule, next)
+				if next.IsZero() {
+					log.Printf("cron: bad schedule while catching up for job %s", j.ID)
+					j.Enabled = false
+					break
+				}
+			}
 			j.NextRun = next
 		}
 		changed = true
@@ -169,13 +206,35 @@ func (cr *CronRunner) tick() {
 			log.Printf("cron: failed to save jobs: %v", err)
 		}
 	}
+	cr.mu.Unlock()
+
+	for _, msg := range dueMessages {
+		cr.bus.Inbound <- msg
+	}
 }
 
-func nextRunTime(schedule string) (time.Time, error) {
+func nextRunTimeFrom(schedule string, from time.Time) (time.Time, error) {
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	sched, err := parser.Parse(schedule)
 	if err != nil {
 		return time.Time{}, err
 	}
-	return sched.Next(time.Now()), nil
+	return sched.Next(from), nil
+}
+
+func nextRunTimeOrZero(schedule string, from time.Time) time.Time {
+	next, err := nextRunTimeFrom(schedule, from)
+	if err != nil {
+		return time.Time{}
+	}
+	return next
+}
+
+func normalizeCronDeliveryTarget(channel, chatID string) (string, string, error) {
+	channel = strings.TrimSpace(channel)
+	chatID = strings.TrimSpace(chatID)
+	if (channel == "") != (chatID == "") {
+		return "", "", fmt.Errorf("delivery_channel and delivery_chat_id must both be set or both empty")
+	}
+	return channel, chatID, nil
 }

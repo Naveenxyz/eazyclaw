@@ -9,6 +9,7 @@ import (
 // Skill represents a loaded skill with its metadata and tools.
 type Skill struct {
 	Name         string
+	Path         string
 	Description  string
 	Instructions string
 	Tools        []SkillTool
@@ -60,6 +61,7 @@ func LoadSkills(dir string) ([]Skill, error) {
 		if skill.Name == "" {
 			skill.Name = entry.Name()
 		}
+		skill.Path = skillFile
 
 		skills = append(skills, *skill)
 	}

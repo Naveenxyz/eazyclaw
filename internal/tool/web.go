@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -12,6 +13,102 @@ import (
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 )
+
+const (
+	webFetchMaxBodyBytes = 2 << 20 // 2MB
+	webFetchMaxRedirects = 5
+)
+
+var (
+	webFetchLookupIP = net.LookupIP
+
+	webFetchBlockedHostnames = map[string]struct{}{
+		"localhost":                {},
+		"localhost.localdomain":    {},
+		"metadata.google.internal": {},
+	}
+	webFetchBlockedCIDRs = mustParseCIDRs([]string{
+		"100.64.0.0/10", // carrier-grade NAT
+		"198.18.0.0/15", // benchmarking networks
+	})
+)
+
+func mustParseCIDRs(raw []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(raw))
+	for _, cidr := range raw {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil {
+			nets = append(nets, network)
+		}
+	}
+	return nets
+}
+
+func validateWebFetchURL(raw string) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported URL scheme: %s", parsed.Scheme)
+	}
+	if err := validateWebFetchHost(parsed.Hostname()); err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
+func validateWebFetchHost(host string) error {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return fmt.Errorf("missing hostname")
+	}
+	if _, blocked := webFetchBlockedHostnames[host]; blocked {
+		return fmt.Errorf("blocked hostname: %s", host)
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedWebFetchIP(ip) {
+			return fmt.Errorf("blocked IP address: %s", ip.String())
+		}
+		return nil
+	}
+
+	ips, err := webFetchLookupIP(host)
+	if err != nil {
+		return fmt.Errorf("failed to resolve host: %w", err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("failed to resolve host: %s", host)
+	}
+	for _, ip := range ips {
+		if isBlockedWebFetchIP(ip) {
+			return fmt.Errorf("blocked host resolution: %s -> %s", host, ip.String())
+		}
+	}
+	return nil
+}
+
+func isBlockedWebFetchIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		// 0.0.0.0/8 and 169.254.0.0/16
+		if ip4[0] == 0 || (ip4[0] == 169 && ip4[1] == 254) {
+			return true
+		}
+	}
+	for _, blocked := range webFetchBlockedCIDRs {
+		if blocked.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
 
 // --- WebFetchTool ---
 
@@ -24,7 +121,7 @@ func NewWebFetchTool() *WebFetchTool {
 }
 
 func (t *WebFetchTool) Name() string        { return "web_fetch" }
-func (t *WebFetchTool) Description() string  { return "Fetch a URL and return content as markdown" }
+func (t *WebFetchTool) Description() string { return "Fetch a URL and return content as markdown" }
 func (t *WebFetchTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
@@ -46,8 +143,22 @@ func (t *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (*Resu
 		return &Result{Error: "url is required", IsError: true}, nil
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, params.URL, nil)
+	parsedURL, err := validateWebFetchURL(params.URL)
+	if err != nil {
+		return &Result{Error: err.Error(), IsError: true}, nil
+	}
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= webFetchMaxRedirects {
+				return fmt.Errorf("too many redirects")
+			}
+			_, err := validateWebFetchURL(req.URL.String())
+			return err
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
 	if err != nil {
 		return &Result{Error: fmt.Sprintf("failed to create request: %v", err), IsError: true}, nil
 	}
@@ -59,9 +170,14 @@ func (t *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (*Resu
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, webFetchMaxBodyBytes+1))
 	if err != nil {
 		return &Result{Error: fmt.Sprintf("failed to read response: %v", err), IsError: true}, nil
+	}
+	truncatedByBytes := false
+	if len(body) > webFetchMaxBodyBytes {
+		truncatedByBytes = true
+		body = body[:webFetchMaxBodyBytes]
 	}
 
 	contentType := resp.Header.Get("Content-Type")
@@ -79,6 +195,9 @@ func (t *WebFetchTool) Execute(ctx context.Context, args json.RawMessage) (*Resu
 	if len(content) > 50000 {
 		content = content[:50000] + "\n... [content truncated at 50000 chars]"
 	}
+	if truncatedByBytes {
+		content += "\n... [response truncated at 2MB]"
+	}
 
 	return &Result{Content: content}, nil
 }
@@ -94,7 +213,7 @@ func NewWebSearchTool() *WebSearchTool {
 }
 
 func (t *WebSearchTool) Name() string        { return "web_search" }
-func (t *WebSearchTool) Description() string  { return "Search the web using DuckDuckGo" }
+func (t *WebSearchTool) Description() string { return "Search the web using DuckDuckGo" }
 func (t *WebSearchTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",

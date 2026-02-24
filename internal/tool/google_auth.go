@@ -82,7 +82,15 @@ func (ga *GoogleAuth) saveToken() error {
 
 // AuthURL returns the OAuth2 consent URL for the user to visit.
 func (ga *GoogleAuth) AuthURL() string {
-	return ga.config.AuthCodeURL("state-token",
+	return ga.AuthURLWithState("state-token")
+}
+
+// AuthURLWithState returns the OAuth2 consent URL with caller-provided state.
+func (ga *GoogleAuth) AuthURLWithState(state string) string {
+	if state == "" {
+		state = "state-token"
+	}
+	return ga.config.AuthCodeURL(state,
 		oauth2.AccessTypeOffline,
 		oauth2.ApprovalForce,
 	)

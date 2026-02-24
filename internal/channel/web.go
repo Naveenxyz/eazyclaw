@@ -36,13 +36,19 @@ const sessionExpiry = 24 * time.Hour
 
 // Login rate limiting.
 const (
-	loginMaxAttempts = 5
-	loginLockoutDur  = 2 * time.Minute
+	loginMaxAttempts    = 5
+	loginLockoutDur     = 2 * time.Minute
+	googleOAuthStateTTL = 10 * time.Minute
 )
 
 type loginAttempt struct {
 	count    int
 	lockedAt time.Time
+}
+
+type googleOAuthState struct {
+	SessionToken string
+	ExpiresAt    time.Time
 }
 
 // WebChannel provides a browser-based chat interface and dashboard.
@@ -84,6 +90,9 @@ type WebChannel struct {
 
 	// Google OAuth for Gmail + Calendar tools.
 	googleAuth *tool.GoogleAuth
+
+	// Google OAuth state store: state -> bound auth session and expiry.
+	googleOAuthStates sync.Map
 
 	// Monitoring: cron and heartbeat.
 	cronManager     tool.CronManager
@@ -311,16 +320,27 @@ func (w *WebChannel) handleSPA(rw http.ResponseWriter, r *http.Request) {
 
 // clientIP extracts the client IP for rate limiting.
 func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		if i := strings.IndexByte(fwd, ','); i > 0 {
-			return strings.TrimSpace(fwd[:i])
-		}
-		return strings.TrimSpace(fwd)
-	}
+	remoteHost := r.RemoteAddr
 	if host, _, ok := strings.Cut(r.RemoteAddr, ":"); ok {
-		return host
+		remoteHost = host
 	}
-	return r.RemoteAddr
+	remoteIP := net.ParseIP(strings.TrimSpace(remoteHost))
+	if remoteIP == nil {
+		return strings.TrimSpace(remoteHost)
+	}
+
+	// Trust X-Forwarded-For only when a local/private reverse proxy is in front.
+	if remoteIP.IsLoopback() || remoteIP.IsPrivate() {
+		if fwd := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); fwd != "" {
+			if i := strings.IndexByte(fwd, ','); i >= 0 {
+				fwd = strings.TrimSpace(fwd[:i])
+			}
+			if ip := net.ParseIP(fwd); ip != nil {
+				return ip.String()
+			}
+		}
+	}
+	return remoteIP.String()
 }
 
 // isSecureRequest returns true if the request arrived over HTTPS
@@ -407,6 +427,45 @@ func allowWSOrigin(r *http.Request) bool {
 		return false
 	}
 	return originHost == reqHost && originPort == reqPort
+}
+
+func (w *WebChannel) createGoogleOAuthState(sessionToken string) (string, error) {
+	sessionToken = strings.TrimSpace(sessionToken)
+	if sessionToken == "" {
+		return "", fmt.Errorf("missing authenticated session")
+	}
+
+	stateBytes := make([]byte, 24)
+	if _, err := rand.Read(stateBytes); err != nil {
+		return "", fmt.Errorf("failed to generate oauth state: %w", err)
+	}
+	state := hex.EncodeToString(stateBytes)
+	w.googleOAuthStates.Store(state, googleOAuthState{
+		SessionToken: sessionToken,
+		ExpiresAt:    time.Now().Add(googleOAuthStateTTL),
+	})
+	return state, nil
+}
+
+func (w *WebChannel) consumeGoogleOAuthState(state, sessionToken string) bool {
+	state = strings.TrimSpace(state)
+	sessionToken = strings.TrimSpace(sessionToken)
+	if state == "" || sessionToken == "" {
+		return false
+	}
+
+	val, ok := w.googleOAuthStates.LoadAndDelete(state)
+	if !ok {
+		return false
+	}
+	st, ok := val.(googleOAuthState)
+	if !ok {
+		return false
+	}
+	if time.Now().After(st.ExpiresAt) {
+		return false
+	}
+	return st.SessionToken == sessionToken
 }
 
 // handleAPILogin validates the password and sets a session cookie.
@@ -639,6 +698,43 @@ func parseBeforeSeqQuery(r *http.Request) *int64 {
 	return &n
 }
 
+func normalizeDeliveryForAdd(channel, chatID *string) (string, string, error) {
+	channelValue, channelSet := normalizeOptionalString(channel)
+	chatValue, chatSet := normalizeOptionalString(chatID)
+	if channelSet != chatSet {
+		return "", "", fmt.Errorf("delivery_channel and delivery_chat_id must be provided together")
+	}
+	if !channelSet {
+		return "", "", nil
+	}
+	if (channelValue == "") != (chatValue == "") {
+		return "", "", fmt.Errorf("delivery_channel and delivery_chat_id must both be empty or both non-empty")
+	}
+	return channelValue, chatValue, nil
+}
+
+func normalizeDeliveryForUpdate(channel, chatID *string) (*string, *string, error) {
+	channelValue, channelSet := normalizeOptionalString(channel)
+	chatValue, chatSet := normalizeOptionalString(chatID)
+	if channelSet != chatSet {
+		return nil, nil, fmt.Errorf("delivery_channel and delivery_chat_id must be provided together")
+	}
+	if !channelSet {
+		return nil, nil, nil
+	}
+	if (channelValue == "") != (chatValue == "") {
+		return nil, nil, fmt.Errorf("delivery_channel and delivery_chat_id must both be empty or both non-empty")
+	}
+	return &channelValue, &chatValue, nil
+}
+
+func normalizeOptionalString(v *string) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	return strings.TrimSpace(*v), true
+}
+
 type sessionsPagination struct {
 	Limit   int  `json:"limit"`
 	Offset  int  `json:"offset"`
@@ -820,11 +916,29 @@ func (w *WebChannel) handleConfigGet(rw http.ResponseWriter, r *http.Request) {
 		if users, err := w.store.AllowedUsers("discord"); err == nil {
 			resp.Discord.AllowedUsers = users
 		}
+		if gp, err := w.store.Policy("discord", "group_policy"); err == nil && strings.TrimSpace(gp) != "" {
+			resp.Discord.GroupPolicy = gp
+		}
+		if dp, err := w.store.Policy("discord", "dm_policy"); err == nil && strings.TrimSpace(dp) != "" {
+			resp.Discord.DM.Policy = dp
+		}
 		if users, err := w.store.AllowedUsers("telegram"); err == nil {
 			resp.Telegram.AllowedUsers = users
 		}
+		if gp, err := w.store.Policy("telegram", "group_policy"); err == nil && strings.TrimSpace(gp) != "" {
+			resp.Telegram.GroupPolicy = gp
+		}
+		if dp, err := w.store.Policy("telegram", "dm_policy"); err == nil && strings.TrimSpace(dp) != "" {
+			resp.Telegram.DM.Policy = dp
+		}
 		if users, err := w.store.AllowedUsers("whatsapp"); err == nil {
 			resp.WhatsApp.AllowedUsers = users
+		}
+		if gp, err := w.store.Policy("whatsapp", "group_policy"); err == nil && strings.TrimSpace(gp) != "" {
+			resp.WhatsApp.GroupPolicy = gp
+		}
+		if dp, err := w.store.Policy("whatsapp", "dm_policy"); err == nil && strings.TrimSpace(dp) != "" {
+			resp.WhatsApp.DM.Policy = dp
 		}
 	}
 	if resp.Discord.AllowedUsers == nil {
@@ -883,11 +997,28 @@ func (w *WebChannel) handleConfigPut(rw http.ResponseWriter, r *http.Request) {
 	// Route allowed_users changes to SQLite store; keep static config in YAML.
 	if incoming.Discord != nil {
 		if w.store != nil && incoming.Discord.AllowedUsers != nil {
-			w.store.SetAllowedUsers("discord", incoming.Discord.AllowedUsers)
+			if err := w.store.SetAllowedUsers("discord", incoming.Discord.AllowedUsers); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if w.store != nil && strings.TrimSpace(incoming.Discord.GroupPolicy) != "" {
+			if err := w.store.SetPolicy("discord", "group_policy", incoming.Discord.GroupPolicy); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if w.store != nil && strings.TrimSpace(incoming.Discord.DM.Policy) != "" {
+			if err := w.store.SetPolicy("discord", "dm_policy", incoming.Discord.DM.Policy); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		// Strip allowed_users from YAML write — store is source of truth.
 		yamlCopy := *incoming.Discord
 		yamlCopy.AllowedUsers = nil
+		yamlCopy.GroupPolicy = ""
+		yamlCopy.DM.Policy = ""
 		channels["discord"] = yamlCopy
 		w.channelCfg.Discord = *incoming.Discord
 		if w.discord != nil {
@@ -896,10 +1027,27 @@ func (w *WebChannel) handleConfigPut(rw http.ResponseWriter, r *http.Request) {
 	}
 	if incoming.Telegram != nil {
 		if w.store != nil && incoming.Telegram.AllowedUsers != nil {
-			w.store.SetAllowedUsers("telegram", incoming.Telegram.AllowedUsers)
+			if err := w.store.SetAllowedUsers("telegram", incoming.Telegram.AllowedUsers); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if w.store != nil && strings.TrimSpace(incoming.Telegram.GroupPolicy) != "" {
+			if err := w.store.SetPolicy("telegram", "group_policy", incoming.Telegram.GroupPolicy); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if w.store != nil && strings.TrimSpace(incoming.Telegram.DM.Policy) != "" {
+			if err := w.store.SetPolicy("telegram", "dm_policy", incoming.Telegram.DM.Policy); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		yamlCopy := *incoming.Telegram
 		yamlCopy.AllowedUsers = nil
+		yamlCopy.GroupPolicy = ""
+		yamlCopy.DM.Policy = ""
 		channels["telegram"] = yamlCopy
 		w.channelCfg.Telegram = *incoming.Telegram
 		if w.telegram != nil {
@@ -908,10 +1056,27 @@ func (w *WebChannel) handleConfigPut(rw http.ResponseWriter, r *http.Request) {
 	}
 	if incoming.WhatsApp != nil {
 		if w.store != nil && incoming.WhatsApp.AllowedUsers != nil {
-			w.store.SetAllowedUsers("whatsapp", incoming.WhatsApp.AllowedUsers)
+			if err := w.store.SetAllowedUsers("whatsapp", incoming.WhatsApp.AllowedUsers); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if w.store != nil && strings.TrimSpace(incoming.WhatsApp.GroupPolicy) != "" {
+			if err := w.store.SetPolicy("whatsapp", "group_policy", incoming.WhatsApp.GroupPolicy); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if w.store != nil && strings.TrimSpace(incoming.WhatsApp.DM.Policy) != "" {
+			if err := w.store.SetPolicy("whatsapp", "dm_policy", incoming.WhatsApp.DM.Policy); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		yamlCopy := *incoming.WhatsApp
 		yamlCopy.AllowedUsers = nil
+		yamlCopy.GroupPolicy = ""
+		yamlCopy.DM.Policy = ""
 		channels["whatsapp"] = yamlCopy
 		w.channelCfg.WhatsApp = *incoming.WhatsApp
 		if w.whatsapp != nil {
@@ -1022,8 +1187,27 @@ func channelDiscordSnapshot(cfg *config.ChannelsConfig, ch *DiscordChannel, stor
 		st.DMPolicy = cfg.Discord.DM.Policy
 	}
 	if store != nil {
+		if gp, err := store.Policy("discord", "group_policy"); err == nil && strings.TrimSpace(gp) != "" {
+			st.GroupPolicy = gp
+		}
+		if dp, err := store.Policy("discord", "dm_policy"); err == nil && strings.TrimSpace(dp) != "" {
+			st.DMPolicy = dp
+		}
 		if users, err := store.AllowedUsers("discord"); err == nil && len(users) > 0 {
 			st.AllowedUsers = users
+		}
+		if pending, err := store.PendingApprovals("discord"); err == nil && len(pending) > 0 {
+			st.Pending = make([]DiscordPendingApproval, 0, len(pending))
+			for _, p := range pending {
+				st.Pending = append(st.Pending, DiscordPendingApproval{
+					UserID:       p.UserID,
+					Username:     p.Username,
+					Preview:      p.Preview,
+					MessageCount: p.MessageCount,
+					FirstSeenAt:  p.FirstSeenAt,
+					LastSeenAt:   p.LastSeenAt,
+				})
+			}
 		}
 	} else if cfg != nil && len(cfg.Discord.AllowedUsers) > 0 {
 		st.AllowedUsers = append([]string{}, cfg.Discord.AllowedUsers...)
@@ -1117,8 +1301,27 @@ func channelTelegramSnapshot(cfg *config.ChannelsConfig, ch *TelegramChannel, st
 		st.DMPolicy = cfg.Telegram.DM.Policy
 	}
 	if store != nil {
+		if gp, err := store.Policy("telegram", "group_policy"); err == nil && strings.TrimSpace(gp) != "" {
+			st.GroupPolicy = gp
+		}
+		if dp, err := store.Policy("telegram", "dm_policy"); err == nil && strings.TrimSpace(dp) != "" {
+			st.DMPolicy = dp
+		}
 		if users, err := store.AllowedUsers("telegram"); err == nil && len(users) > 0 {
 			st.AllowedUsers = users
+		}
+		if pending, err := store.PendingApprovals("telegram"); err == nil && len(pending) > 0 {
+			st.Pending = make([]TelegramPendingApproval, 0, len(pending))
+			for _, p := range pending {
+				st.Pending = append(st.Pending, TelegramPendingApproval{
+					UserID:       p.UserID,
+					Username:     p.Username,
+					Preview:      p.Preview,
+					MessageCount: p.MessageCount,
+					FirstSeenAt:  p.FirstSeenAt,
+					LastSeenAt:   p.LastSeenAt,
+				})
+			}
 		}
 	} else if cfg != nil && len(cfg.Telegram.AllowedUsers) > 0 {
 		st.AllowedUsers = append([]string{}, cfg.Telegram.AllowedUsers...)
@@ -1278,8 +1481,10 @@ func (w *WebChannel) handleCron(rw http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			Schedule string `json:"schedule"`
-			Task     string `json:"task"`
+			Schedule        string  `json:"schedule"`
+			Task            string  `json:"task"`
+			DeliveryChannel *string `json:"delivery_channel"`
+			DeliveryChatID  *string `json:"delivery_chat_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(rw, "invalid request body", http.StatusBadRequest)
@@ -1289,7 +1494,12 @@ func (w *WebChannel) handleCron(rw http.ResponseWriter, r *http.Request) {
 			http.Error(rw, "schedule and task are required", http.StatusBadRequest)
 			return
 		}
-		id, err := w.cronManager.AddJob(req.Schedule, req.Task)
+		deliveryChannel, deliveryChatID, err := normalizeDeliveryForAdd(req.DeliveryChannel, req.DeliveryChatID)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+		id, err := w.cronManager.AddJob(req.Schedule, req.Task, deliveryChannel, deliveryChatID)
 		if err != nil {
 			http.Error(rw, err.Error(), http.StatusBadRequest)
 			return
@@ -1328,7 +1538,7 @@ func (w *WebChannel) handleCronJob(rw http.ResponseWriter, r *http.Request) {
 		jobs := w.cronManager.ListJobs()
 		for _, j := range jobs {
 			if j.ID == jobID {
-				err := w.cronManager.UpdateJob(jobID, "", "", !j.Enabled)
+				err := w.cronManager.UpdateJob(jobID, "", "", !j.Enabled, nil, nil)
 				if err != nil {
 					http.Error(rw, err.Error(), http.StatusInternalServerError)
 					return
@@ -1342,19 +1552,39 @@ func (w *WebChannel) handleCronJob(rw http.ResponseWriter, r *http.Request) {
 
 	case r.Method == http.MethodPut:
 		var req struct {
-			Schedule string `json:"schedule"`
-			Task     string `json:"task"`
-			Enabled  *bool  `json:"enabled"`
+			Schedule        string  `json:"schedule"`
+			Task            string  `json:"task"`
+			DeliveryChannel *string `json:"delivery_channel"`
+			DeliveryChatID  *string `json:"delivery_chat_id"`
+			Enabled         *bool   `json:"enabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(rw, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		enabled := true
-		if req.Enabled != nil {
+		enabled := false
+		if req.Enabled == nil {
+			found := false
+			for _, j := range w.cronManager.ListJobs() {
+				if j.ID == jobID {
+					enabled = j.Enabled
+					found = true
+					break
+				}
+			}
+			if !found {
+				http.Error(rw, "job not found", http.StatusNotFound)
+				return
+			}
+		} else {
 			enabled = *req.Enabled
 		}
-		if err := w.cronManager.UpdateJob(jobID, req.Schedule, req.Task, enabled); err != nil {
+		deliveryChannel, deliveryChatID, err := normalizeDeliveryForUpdate(req.DeliveryChannel, req.DeliveryChatID)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := w.cronManager.UpdateJob(jobID, req.Schedule, req.Task, enabled, deliveryChannel, deliveryChatID); err != nil {
 			http.Error(rw, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -1377,27 +1607,83 @@ func (w *WebChannel) handleCronJob(rw http.ResponseWriter, r *http.Request) {
 // --- Heartbeat API ---
 
 func (w *WebChannel) handleHeartbeat(rw http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if w.heartbeatRunner != nil {
-		status := w.heartbeatRunner.Status()
+	switch r.Method {
+	case http.MethodGet:
+		resp := w.heartbeatStatusSnapshot()
 		rw.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(rw).Encode(status)
+		json.NewEncoder(rw).Encode(resp)
 		return
+
+	case http.MethodPut:
+		var req struct {
+			DeliveryChannel *string `json:"delivery_channel"`
+			DeliveryChatID  *string `json:"delivery_chat_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(rw, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		deliveryChannel, deliveryChatID, err := normalizeDeliveryForUpdate(req.DeliveryChannel, req.DeliveryChatID)
+		if err != nil {
+			http.Error(rw, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if deliveryChannel == nil || deliveryChatID == nil {
+			http.Error(rw, "delivery_channel and delivery_chat_id are required", http.StatusBadRequest)
+			return
+		}
+
+		if w.store != nil {
+			if err := w.store.SetPolicy("heartbeat", "delivery_channel", *deliveryChannel); err != nil {
+				http.Error(rw, "failed to persist heartbeat delivery channel", http.StatusInternalServerError)
+				return
+			}
+			if err := w.store.SetPolicy("heartbeat", "delivery_chat_id", *deliveryChatID); err != nil {
+				http.Error(rw, "failed to persist heartbeat delivery chat id", http.StatusInternalServerError)
+				return
+			}
+		}
+		if w.heartbeatRunner != nil {
+			if err := w.heartbeatRunner.SetDeliveryTarget(*deliveryChannel, *deliveryChatID); err != nil {
+				http.Error(rw, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+
+		resp := w.heartbeatStatusSnapshot()
+		resp.DeliveryChannel = *deliveryChannel
+		resp.DeliveryChatID = *deliveryChatID
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(resp)
+		return
+
+	default:
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (w *WebChannel) heartbeatStatusSnapshot() agent.HeartbeatStatus {
+	if w.heartbeatRunner != nil {
+		return w.heartbeatRunner.Status()
 	}
 
-	// Heartbeat not running - return disabled status
 	resp := agent.HeartbeatStatus{
 		Enabled: false,
 	}
 	if w.heartbeatCfg != nil {
 		resp.Interval = w.heartbeatCfg.Interval.String()
 	}
-	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(resp)
+	if w.store != nil {
+		channel, _ := w.store.Policy("heartbeat", "delivery_channel")
+		chatID, _ := w.store.Policy("heartbeat", "delivery_chat_id")
+		channel = strings.TrimSpace(channel)
+		chatID = strings.TrimSpace(chatID)
+		if channel != "" && chatID != "" {
+			resp.DeliveryChannel = channel
+			resp.DeliveryChatID = chatID
+		}
+	}
+	return resp
 }
 
 // --- WhatsApp Admin API ---
@@ -1475,10 +1761,16 @@ func (w *WebChannel) handleWhatsAppSettings(rw http.ResponseWriter, r *http.Requ
 			}
 		}
 		if req.GroupPolicy != "" {
-			w.store.SetPolicy("whatsapp", "group_policy", req.GroupPolicy)
+			if err := w.store.SetPolicy("whatsapp", "group_policy", req.GroupPolicy); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		if req.DMPolicy != "" {
-			w.store.SetPolicy("whatsapp", "dm_policy", req.DMPolicy)
+			if err := w.store.SetPolicy("whatsapp", "dm_policy", req.DMPolicy); err != nil {
+				http.Error(rw, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	}
 
@@ -1635,7 +1927,19 @@ func (w *WebChannel) handleGoogleAuthURL(rw http.ResponseWriter, r *http.Request
 		return
 	}
 
-	url := w.googleAuth.AuthURL()
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		http.Error(rw, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	state, err := w.createGoogleOAuthState(cookie.Value)
+	if err != nil {
+		http.Error(rw, "failed to start OAuth flow", http.StatusInternalServerError)
+		return
+	}
+
+	url := w.googleAuth.AuthURLWithState(state)
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(map[string]string{"url": url})
 }
@@ -1648,6 +1952,26 @@ func (w *WebChannel) handleGoogleAuthCallback(rw http.ResponseWriter, r *http.Re
 
 	if w.googleAuth == nil {
 		http.Error(rw, "google not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	if !w.isAuthenticated(r) {
+		http.Error(rw, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		http.Error(rw, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	oauthState := strings.TrimSpace(r.URL.Query().Get("state"))
+	if oauthState == "" {
+		http.Error(rw, "missing OAuth state", http.StatusBadRequest)
+		return
+	}
+	if !w.consumeGoogleOAuthState(oauthState, cookie.Value) {
+		http.Error(rw, "invalid OAuth state", http.StatusBadRequest)
 		return
 	}
 

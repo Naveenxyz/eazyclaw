@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -112,6 +113,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err := stateStore.SeedFromConfig(cfg.Channels); err != nil {
 		slog.Warn("failed to seed state store from config", "error", err)
 	}
+	applyStoreRuntimeChannelState(&cfg.Channels, stateStore)
 
 	// 3. Create message bus
 	msgBus := bus.New(100)
@@ -193,11 +195,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	ctxBuilder.SetHeartbeatPath(memoryManager.HeartbeatPath())
 	ctxBuilder.SetMemoryManager(memoryManager)
 	ctxBuilder.SetToolDescriptions(toolReg.Descriptions())
-	skillInstructions := make([]string, len(skills))
-	for i, s := range skills {
-		skillInstructions[i] = s.Instructions
-	}
-	ctxBuilder.SetSkills(skillInstructions)
+	ctxBuilder.SetSkills(buildSkillPromptEntries(skills, 30000))
 	ctxBuilder.SetTools(toolReg.List())
 
 	// 7. Create session store
@@ -308,12 +306,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Start outbound message dispatcher
 	go func() {
 		for msg := range msgBus.Outbound {
+			delivered := false
 			for _, ch := range channels {
 				if ch.Name() == msg.ChannelID {
+					delivered = true
 					if err := ch.Send(ctx, msg); err != nil {
 						slog.Error("failed to send message", "channel", msg.ChannelID, "error", err)
 					}
+					break
 				}
+			}
+			if !delivered {
+				slog.Warn("no channel registered for outbound message", "channel", msg.ChannelID, "chat_id", msg.ChatID)
 			}
 		}
 	}()
@@ -332,7 +336,23 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Start heartbeat runner if enabled
 	if cfg.Heartbeat.Enabled {
-		hb := agent.NewHeartbeatRunner(cfg.Heartbeat.Interval, msgBus)
+		heartbeatDeliveryChannel := strings.TrimSpace(os.Getenv("HEARTBEAT_DELIVERY_CHANNEL"))
+		heartbeatDeliveryChatID := strings.TrimSpace(os.Getenv("HEARTBEAT_DELIVERY_CHAT_ID"))
+		if stateStore != nil {
+			if channel, err := stateStore.Policy("heartbeat", "delivery_channel"); err == nil && strings.TrimSpace(channel) != "" {
+				heartbeatDeliveryChannel = strings.TrimSpace(channel)
+			}
+			if chatID, err := stateStore.Policy("heartbeat", "delivery_chat_id"); err == nil && strings.TrimSpace(chatID) != "" {
+				heartbeatDeliveryChatID = strings.TrimSpace(chatID)
+			}
+		}
+		if (heartbeatDeliveryChannel == "") != (heartbeatDeliveryChatID == "") {
+			slog.Warn("invalid heartbeat delivery target configuration; clearing delivery target", "channel", heartbeatDeliveryChannel, "chat_id", heartbeatDeliveryChatID)
+			heartbeatDeliveryChannel = ""
+			heartbeatDeliveryChatID = ""
+		}
+
+		hb := agent.NewHeartbeatRunner(cfg.Heartbeat.Interval, msgBus, memoryManager.HeartbeatPath(), heartbeatDeliveryChannel, heartbeatDeliveryChatID)
 		// Wire into WebChannel for monitoring API
 		for _, ch := range channels {
 			if wc, ok := ch.(*channelPkg.WebChannel); ok {
@@ -362,6 +382,112 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+func applyStoreRuntimeChannelState(ch *config.ChannelsConfig, store *state.Store) {
+	if ch == nil || store == nil {
+		return
+	}
+
+	if users, err := store.AllowedUsers("discord"); err == nil {
+		ch.Discord.AllowedUsers = users
+	}
+	if gp, err := store.Policy("discord", "group_policy"); err == nil && strings.TrimSpace(gp) != "" {
+		ch.Discord.GroupPolicy = gp
+	}
+	if dp, err := store.Policy("discord", "dm_policy"); err == nil && strings.TrimSpace(dp) != "" {
+		ch.Discord.DM.Policy = dp
+	}
+
+	if users, err := store.AllowedUsers("telegram"); err == nil {
+		ch.Telegram.AllowedUsers = users
+	}
+	if gp, err := store.Policy("telegram", "group_policy"); err == nil && strings.TrimSpace(gp) != "" {
+		ch.Telegram.GroupPolicy = gp
+	}
+	if dp, err := store.Policy("telegram", "dm_policy"); err == nil && strings.TrimSpace(dp) != "" {
+		ch.Telegram.DM.Policy = dp
+	}
+
+	if users, err := store.AllowedUsers("whatsapp"); err == nil {
+		ch.WhatsApp.AllowedUsers = users
+	}
+	if gp, err := store.Policy("whatsapp", "group_policy"); err == nil && strings.TrimSpace(gp) != "" {
+		ch.WhatsApp.GroupPolicy = gp
+	}
+	if dp, err := store.Policy("whatsapp", "dm_policy"); err == nil && strings.TrimSpace(dp) != "" {
+		ch.WhatsApp.DM.Policy = dp
+	}
+}
+
+func buildSkillPromptEntries(skills []skill.Skill, maxTotalChars int) []string {
+	if len(skills) == 0 {
+		return nil
+	}
+	if maxTotalChars <= 0 {
+		maxTotalChars = 30000
+	}
+
+	const maxInstructionPreviewChars = 1200
+
+	out := make([]string, 0, len(skills))
+	total := 0
+	for _, s := range skills {
+		entry := formatSkillPromptEntry(s, maxInstructionPreviewChars)
+		if entry == "" {
+			continue
+		}
+		if total+len(entry) > maxTotalChars {
+			remaining := maxTotalChars - total
+			if remaining <= 0 {
+				break
+			}
+			if remaining > 96 {
+				clipped := strings.TrimSpace(entry[:remaining])
+				out = append(out, clipped+"\n[truncated due to skill prompt budget]")
+			}
+			break
+		}
+		out = append(out, entry)
+		total += len(entry)
+	}
+	return out
+}
+
+func formatSkillPromptEntry(s skill.Skill, maxInstructionChars int) string {
+	name := strings.TrimSpace(s.Name)
+	if name == "" {
+		name = "unnamed-skill"
+	}
+
+	var b strings.Builder
+	b.WriteString("### ")
+	b.WriteString(name)
+	b.WriteString("\n")
+
+	if desc := strings.TrimSpace(s.Description); desc != "" {
+		b.WriteString("Description: ")
+		b.WriteString(desc)
+		b.WriteString("\n")
+	}
+	if path := strings.TrimSpace(s.Path); path != "" {
+		b.WriteString("Skill file: ")
+		b.WriteString(path)
+		b.WriteString("\n")
+	}
+	b.WriteString("Use read_file on the skill file for full details when needed.\n")
+
+	instr := strings.TrimSpace(s.Instructions)
+	if instr != "" {
+		if maxInstructionChars > 0 && len(instr) > maxInstructionChars {
+			instr = strings.TrimSpace(instr[:maxInstructionChars]) + "\n...[truncated]"
+		}
+		b.WriteString("Instruction preview:\n")
+		b.WriteString(instr)
+		b.WriteString("\n")
+	}
+
+	return strings.TrimSpace(b.String())
 }
 
 func runConfigCheck(cmd *cobra.Command, args []string) error {

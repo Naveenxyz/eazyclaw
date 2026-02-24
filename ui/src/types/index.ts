@@ -166,6 +166,8 @@ export interface CronJob {
   id: string;
   schedule: string;
   task: string;
+  delivery_channel?: string;
+  delivery_chat_id?: string;
   enabled: boolean;
   last_run: string;
   next_run: string;
@@ -178,6 +180,8 @@ export interface HeartbeatStatus {
   interval: string;
   last_run: string;
   running: boolean;
+  delivery_channel?: string;
+  delivery_chat_id?: string;
 }
 
 // --- WhatsApp ---

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -78,6 +79,11 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (*Result,
 			}, nil
 		}
 	}
+	if t.workspaceOnly {
+		if err := validateWorkspaceCommand(params.Command, t.workspaceDir); err != nil {
+			return &Result{Error: err.Error(), IsError: true}, nil
+		}
+	}
 
 	execCtx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
@@ -110,10 +116,43 @@ func (t *ShellTool) Execute(ctx context.Context, args json.RawMessage) (*Result,
 	return &Result{Content: result}, nil
 }
 
+func validateWorkspaceCommand(command, workspaceDir string) error {
+	if strings.TrimSpace(command) == "" {
+		return fmt.Errorf("command is required")
+	}
+
+	tokens := strings.Fields(command)
+	for _, token := range tokens {
+		clean := strings.TrimSpace(token)
+		clean = strings.Trim(clean, "\"'`(),;")
+		clean = strings.TrimLeft(clean, "<>|&!")
+		if clean == "" {
+			continue
+		}
+		if strings.Contains(clean, "://") {
+			continue
+		}
+		if strings.HasPrefix(clean, "~") {
+			return fmt.Errorf("workspace_only mode blocks home-directory references")
+		}
+		if strings.Contains(clean, "..") {
+			return fmt.Errorf("workspace_only mode blocks parent-directory traversal")
+		}
+		if strings.HasPrefix(clean, "/") {
+			abs := filepath.Clean(clean)
+			rel, err := filepath.Rel(workspaceDir, abs)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("workspace_only mode blocks absolute path outside workspace: %s", abs)
+			}
+		}
+	}
+	return nil
+}
+
 // filterEnv removes environment variables that are dangerous for shell/runtime integrity.
 func filterEnv(environ []string) []string {
-	// Keep auth tokens available to runtime tools (for example gh with GH_TOKEN),
-	// but strip env vars that can hijack runtime loading or shell behavior.
+	// Remove env vars that can hijack runtime loading/shell behavior and keep
+	// secret-like keys out of shell execution.
 	blockedExactKeys := map[string]struct{}{
 		"NODE_OPTIONS":  {},
 		"NODE_PATH":     {},
@@ -131,6 +170,22 @@ func filterEnv(environ []string) []string {
 		"SSLKEYLOGFILE": {},
 	}
 	blockedPrefixes := []string{"DYLD_", "LD_", "BASH_FUNC_"}
+	allowedExact := map[string]struct{}{
+		"PATH":      {},
+		"HOME":      {},
+		"PWD":       {},
+		"LANG":      {},
+		"LC_ALL":    {},
+		"LC_CTYPE":  {},
+		"TERM":      {},
+		"COLORTERM": {},
+		"TMPDIR":    {},
+		"TEMP":      {},
+		"TMP":       {},
+		"USER":      {},
+		"LOGNAME":   {},
+		"SHLVL":     {},
+	}
 
 	filtered := make([]string, 0, len(environ))
 	for _, env := range environ {
@@ -148,9 +203,28 @@ func filterEnv(environ []string) []string {
 				}
 			}
 		}
+		if !skip && isSensitiveEnvKey(upper) {
+			skip = true
+		}
+		if !skip {
+			if _, ok := allowedExact[upper]; !ok {
+				// Keep unknown vars out by default to prevent accidental secret leakage.
+				continue
+			}
+		}
 		if !skip {
 			filtered = append(filtered, env)
 		}
 	}
 	return filtered
+}
+
+func isSensitiveEnvKey(key string) bool {
+	sensitiveParts := []string{"TOKEN", "SECRET", "PASSWORD", "API_KEY", "AUTH", "COOKIE", "CREDENTIAL"}
+	for _, part := range sensitiveParts {
+		if strings.Contains(key, part) {
+			return true
+		}
+	}
+	return false
 }

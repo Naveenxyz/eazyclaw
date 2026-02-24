@@ -1095,12 +1095,17 @@ func (a *AgentLoop) runBackgroundDigest(ctx context.Context) {
 
 // sendReply sends a text response back to the originating chat.
 func (a *AgentLoop) sendReply(msg bus.Message, text string) {
+	channelID := msg.ChannelID
 	chatID := msg.GroupID
 	if chatID == "" {
 		chatID = msg.SenderID
 	}
+	if msg.ReplyChannelID != "" && msg.ReplyChatID != "" {
+		channelID = msg.ReplyChannelID
+		chatID = msg.ReplyChatID
+	}
 	a.bus.Outbound <- bus.OutboundMessage{
-		ChannelID: msg.ChannelID,
+		ChannelID: channelID,
 		ChatID:    chatID,
 		Text:      text,
 		ReplyTo:   msg.ID,

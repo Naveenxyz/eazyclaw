@@ -33,6 +33,8 @@ export default function CronTab() {
   const [showModal, setShowModal] = useState(false);
   const [newSchedule, setNewSchedule] = useState("");
   const [newTask, setNewTask] = useState("");
+  const [newDeliveryChannel, setNewDeliveryChannel] = useState("");
+  const [newDeliveryChatID, setNewDeliveryChatID] = useState("");
   const [creating, setCreating] = useState(false);
 
   const fetchJobs = useCallback(() => {
@@ -78,11 +80,22 @@ export default function CronTab() {
 
   const handleCreate = async () => {
     if (!newSchedule.trim() || !newTask.trim()) return;
+    const deliveryChannel = newDeliveryChannel.trim();
+    const deliveryChatID = newDeliveryChatID.trim();
+    if ((deliveryChannel === "") !== (deliveryChatID === "")) return;
+
     setCreating(true);
     try {
-      await addCronJob(newSchedule.trim(), newTask.trim());
+      await addCronJob(
+        newSchedule.trim(),
+        newTask.trim(),
+        deliveryChannel === "" ? undefined : deliveryChannel,
+        deliveryChatID === "" ? undefined : deliveryChatID
+      );
       setNewSchedule("");
       setNewTask("");
+      setNewDeliveryChannel("");
+      setNewDeliveryChatID("");
       setShowModal(false);
       fetchJobs();
     } catch {
@@ -163,6 +176,11 @@ export default function CronTab() {
                 <span>Last: {formatRelativeTime(job.last_run)}</span>
                 <span>Next: {formatRelativeTime(job.next_run)}</span>
               </div>
+              {job.delivery_channel && job.delivery_chat_id && (
+                <p className="text-xs text-fg-3 font-mono mb-3">
+                  Deliver to: {job.delivery_channel}:{job.delivery_chat_id}
+                </p>
+              )}
 
               {/* Row 4: Actions */}
               <div className="flex items-center gap-2">
@@ -239,6 +257,38 @@ export default function CronTab() {
               />
             </div>
 
+            <div className="grid grid-cols-1 gap-3 mb-5">
+              <div>
+                <label className="block text-xs text-fg-2 font-medium mb-1.5">
+                  Delivery Channel (optional)
+                </label>
+                <input
+                  type="text"
+                  value={newDeliveryChannel}
+                  onChange={(e) => setNewDeliveryChannel(e.target.value)}
+                  placeholder="telegram"
+                  className="input-focus w-full rounded-md bg-raised border border-edge px-3 py-2 text-sm font-mono text-fg placeholder:text-fg-3"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-fg-2 font-medium mb-1.5">
+                  Delivery Chat ID (optional)
+                </label>
+                <input
+                  type="text"
+                  value={newDeliveryChatID}
+                  onChange={(e) => setNewDeliveryChatID(e.target.value)}
+                  placeholder="123456789"
+                  className="input-focus w-full rounded-md bg-raised border border-edge px-3 py-2 text-sm font-mono text-fg placeholder:text-fg-3"
+                />
+              </div>
+              {(newDeliveryChannel.trim() === "") !== (newDeliveryChatID.trim() === "") && (
+                <p className="text-xs text-error">
+                  Set both delivery fields or leave both empty.
+                </p>
+              )}
+            </div>
+
             {/* Actions */}
             <div className="flex items-center justify-end gap-3">
               <button
@@ -249,7 +299,12 @@ export default function CronTab() {
               </button>
               <button
                 onClick={handleCreate}
-                disabled={creating || !newSchedule.trim() || !newTask.trim()}
+                disabled={
+                  creating ||
+                  !newSchedule.trim() ||
+                  !newTask.trim() ||
+                  (newDeliveryChannel.trim() === "") !== (newDeliveryChatID.trim() === "")
+                }
                 className="btn btn-accent px-4 py-2 text-sm disabled:opacity-40"
               >
                 {creating ? "Creating..." : "Create"}

@@ -2,24 +2,31 @@ package tool
 
 import "testing"
 
-func TestFilterEnv_PreservesGitHubTokens(t *testing.T) {
+func TestFilterEnv_StripsSecretLikeVars(t *testing.T) {
 	input := []string{
 		"GH_TOKEN=ghp_test",
 		"GITHUB_TOKEN=ghs_test",
 		"OPENAI_API_KEY=sk-test",
 		"PATH=/usr/bin:/bin",
+		"LANG=en_US.UTF-8",
 	}
 
 	filtered := filterEnv(input)
 
-	if !containsEnv(filtered, "GH_TOKEN=ghp_test") {
-		t.Fatalf("expected GH_TOKEN to be preserved")
+	if containsKey(filtered, "GH_TOKEN") {
+		t.Fatalf("expected GH_TOKEN to be filtered")
 	}
-	if !containsEnv(filtered, "GITHUB_TOKEN=ghs_test") {
-		t.Fatalf("expected GITHUB_TOKEN to be preserved")
+	if containsKey(filtered, "GITHUB_TOKEN") {
+		t.Fatalf("expected GITHUB_TOKEN to be filtered")
 	}
-	if !containsEnv(filtered, "OPENAI_API_KEY=sk-test") {
-		t.Fatalf("expected OPENAI_API_KEY to be preserved")
+	if containsKey(filtered, "OPENAI_API_KEY") {
+		t.Fatalf("expected OPENAI_API_KEY to be filtered")
+	}
+	if !containsKey(filtered, "PATH") {
+		t.Fatalf("expected PATH to remain")
+	}
+	if !containsKey(filtered, "LANG") {
+		t.Fatalf("expected LANG to remain")
 	}
 }
 
@@ -31,7 +38,7 @@ func TestFilterEnv_BlocksRuntimeHijackKeys(t *testing.T) {
 		"BASH_FUNC_echo%%=() { :; }",
 		"SHELL=/bin/zsh",
 		"PATH=/usr/bin:/bin",
-		"GH_TOKEN=ghp_test",
+		"HOME=/workspace",
 	}
 
 	filtered := filterEnv(input)
@@ -51,8 +58,32 @@ func TestFilterEnv_BlocksRuntimeHijackKeys(t *testing.T) {
 	if containsKey(filtered, "SHELL") {
 		t.Fatalf("expected SHELL to be filtered")
 	}
-	if !containsKey(filtered, "GH_TOKEN") {
-		t.Fatalf("expected GH_TOKEN to remain")
+	if !containsKey(filtered, "PATH") {
+		t.Fatalf("expected PATH to remain")
+	}
+	if !containsKey(filtered, "HOME") {
+		t.Fatalf("expected HOME to remain")
+	}
+}
+
+func TestValidateWorkspaceCommand_BlocksOutsideAbsolutePaths(t *testing.T) {
+	err := validateWorkspaceCommand("cat /etc/passwd", "/workspace")
+	if err == nil {
+		t.Fatalf("expected absolute path outside workspace to be blocked")
+	}
+}
+
+func TestValidateWorkspaceCommand_AllowsWorkspaceAbsolutePaths(t *testing.T) {
+	err := validateWorkspaceCommand("cat /workspace/project/file.txt", "/workspace")
+	if err != nil {
+		t.Fatalf("expected workspace path to be allowed, got error: %v", err)
+	}
+}
+
+func TestValidateWorkspaceCommand_BlocksParentTraversal(t *testing.T) {
+	err := validateWorkspaceCommand("cat ../secrets.txt", "/workspace")
+	if err == nil {
+		t.Fatalf("expected parent traversal to be blocked")
 	}
 }
 
@@ -74,4 +105,3 @@ func containsKey(environ []string, key string) bool {
 	}
 	return false
 }
-
