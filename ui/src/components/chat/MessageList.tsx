@@ -1,17 +1,67 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { MessageSquare } from "lucide-react";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import type { Message } from "@/types";
 
 interface MessageListProps {
   messages: Message[];
+  hasMore: boolean;
+  onLoadMore: () => void;
+  loadingMore: boolean;
 }
 
-export function MessageList({ messages }: MessageListProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+export function MessageList({ messages, hasMore, onLoadMore, loadingMore }: MessageListProps) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const prevRef = useRef<{
+    len: number;
+    firstSig: string;
+    lastSig: string;
+    scrollHeight: number;
+    scrollTop: number;
+  } | null>(null);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+
+    const first = messages[0];
+    const last = messages[messages.length - 1];
+    const firstSig = first ? `${first.role}:${first.content}` : "";
+    const lastSig = last ? `${last.role}:${last.content}` : "";
+    const prev = prevRef.current;
+
+    if (!prev) {
+      el.scrollTop = el.scrollHeight;
+      prevRef.current = {
+        len: messages.length,
+        firstSig,
+        lastSig,
+        scrollHeight: el.scrollHeight,
+        scrollTop: el.scrollTop,
+      };
+      return;
+    }
+
+    const grew = messages.length > prev.len;
+    const prepended = grew && firstSig !== prev.firstSig && lastSig === prev.lastSig;
+
+    if (prepended) {
+      const delta = el.scrollHeight - prev.scrollHeight;
+      el.scrollTop = prev.scrollTop + delta;
+    } else {
+      const nearBottom = prev.scrollHeight - (prev.scrollTop + el.clientHeight) < 80;
+      if (nearBottom || messages.length < prev.len || prev.len === 0) {
+        el.scrollTop = el.scrollHeight;
+      }
+    }
+
+    prevRef.current = {
+      len: messages.length,
+      firstSig,
+      lastSig,
+      scrollHeight: el.scrollHeight,
+      scrollTop: el.scrollTop,
+    };
   }, [messages]);
 
   if (messages.length === 0) {
@@ -29,12 +79,20 @@ export function MessageList({ messages }: MessageListProps) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 bg-base">
+    <div ref={listRef} className="flex-1 overflow-y-auto p-4 bg-base">
       <div className="mx-auto flex max-w-3xl flex-col space-y-3">
+        {hasMore && (
+          <button
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="self-center rounded-md border border-edge bg-raised px-3 py-1.5 text-xs font-medium text-fg-2 hover:text-fg hover:bg-surface transition-colors disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+          >
+            {loadingMore ? "Loading..." : "Load older messages"}
+          </button>
+        )}
         {messages.map((message, index) => (
           <MessageBubble key={index} message={message} />
         ))}
-        <div ref={bottomRef} />
       </div>
     </div>
   );

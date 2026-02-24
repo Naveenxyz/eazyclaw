@@ -109,6 +109,10 @@ func TestContextBuilderRuntimeInfoIncludesModelAndContextEstimates(t *testing.T)
 		ContextWindowTokens:      200000,
 		EstimatedContextTokens:   4200,
 		EstimatedRemainingTokens: 195800,
+		SessionTotalInputTokens:  12000,
+		SessionTotalOutputTokens: 3000,
+		SessionLastTurnInput:     420,
+		SessionLastTurnOutput:    210,
 	})
 
 	if !strings.Contains(prompt, "- Provider: anthropic") {
@@ -125,5 +129,11 @@ func TestContextBuilderRuntimeInfoIncludesModelAndContextEstimates(t *testing.T)
 	}
 	if !strings.Contains(prompt, "- Estimated remaining before limit: 195800 tokens") {
 		t.Fatalf("expected remaining token runtime info")
+	}
+	if !strings.Contains(prompt, "- Session token totals (model API): input=12000 output=3000 total=15000") {
+		t.Fatalf("expected session total token runtime info")
+	}
+	if !strings.Contains(prompt, "- Last turn token usage: input=420 output=210 total=630") {
+		t.Fatalf("expected last turn token runtime info")
 	}
 }

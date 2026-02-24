@@ -42,6 +42,12 @@
 
 **Agent Loop** — Orchestrates the full request lifecycle: context build, provider call, tool execution loop, and response routing.
 
+**Session Store** — SQLite-backed session persistence (`/data/eazyclaw/sessions/sessions.db`) with:
+- message history storage
+- compaction metadata
+- token usage counters
+- paginated reads for dashboard/API
+
 **Providers** — Pluggable LLM backends. Supported: Anthropic, OpenAI, Gemini, Kimi, Moonshot, Zhipu.
 
 **Tools** — Registry-based tool system. Built-in tools cover shell execution, filesystem access, web fetching, memory operations, and cron scheduling.

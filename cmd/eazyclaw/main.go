@@ -201,7 +201,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	ctxBuilder.SetTools(toolReg.List())
 
 	// 7. Create session store
-	sessStore := agent.NewSessionStore(filepath.Join(cfg.DataDir, "sessions"))
+	sessStore, err := agent.NewSessionStore(filepath.Join(cfg.DataDir, "sessions"))
+	if err != nil {
+		return fmt.Errorf("failed to open session store: %w", err)
+	}
+	defer sessStore.Close()
 
 	// 8. Create router
 	r := router.NewRouter(stateStore)

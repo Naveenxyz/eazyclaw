@@ -5,6 +5,9 @@ interface SessionListProps {
   sessions: SessionSummary[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  hasMore: boolean;
+  onLoadMore: () => void;
+  loadingMore: boolean;
 }
 
 function formatRelativeTime(dateStr: string): string {
@@ -22,7 +25,14 @@ function formatRelativeTime(dateStr: string): string {
   return `${diffDay}d ago`;
 }
 
-export function SessionList({ sessions, selectedId, onSelect }: SessionListProps) {
+export function SessionList({
+  sessions,
+  selectedId,
+  onSelect,
+  hasMore,
+  onLoadMore,
+  loadingMore,
+}: SessionListProps) {
   return (
     <div className="flex w-60 flex-col border-r border-edge bg-surface h-full">
       {/* Header */}
@@ -66,6 +76,18 @@ export function SessionList({ sessions, selectedId, onSelect }: SessionListProps
               </button>
             );
           })
+        )}
+
+        {hasMore && (
+          <div className="p-3 border-t border-edge">
+            <button
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              className="w-full rounded-md border border-edge bg-raised px-3 py-2 text-xs font-medium text-fg-2 hover:text-fg hover:bg-surface transition-colors disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+            >
+              {loadingMore ? "Loading..." : "Load older sessions"}
+            </button>
+          </div>
         )}
       </div>
     </div>

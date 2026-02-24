@@ -74,11 +74,11 @@ export default function StatusTab() {
   }, []);
 
   useEffect(() => {
-    Promise.all([getStatus(), getSessions(), getHeartbeatStatus()])
-      .then(([statusData, sessions, hb]) => {
+    Promise.all([getStatus(), getSessions({ limit: 1, offset: 0 }), getHeartbeatStatus()])
+      .then(([statusData, sessionsPage, hb]) => {
         setProviders(statusData.providers || []);
         setChannels(statusData.channels || []);
-        setSessionCount(Array.isArray(sessions) ? sessions.length : 0);
+        setSessionCount(sessionsPage.pagination?.total ?? 0);
         setHeartbeat(hb);
         setError(null);
       })

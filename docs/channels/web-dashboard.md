@@ -23,6 +23,7 @@ WEB_PASSWORD=your-secret
 Real-time chat interface backed by WebSocket:
 
 - Full session history preserved across page reloads
+- Paginated session list and message history with "Load older" controls
 - Tool call rendering — shows when and what tools the agent invokes
 - Markdown support for formatted responses (code blocks, lists, bold, etc.)
 - Suitable for direct interaction without needing a third-party channel

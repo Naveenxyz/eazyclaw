@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -614,19 +615,66 @@ func (w *WebChannel) handleStatus(rw http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(rw).Encode(resp)
 }
 
+func parseIntQuery(r *http.Request, key string, def int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func parseBeforeSeqQuery(r *http.Request) *int64 {
+	raw := strings.TrimSpace(r.URL.Query().Get("before_seq"))
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		return nil
+	}
+	return &n
+}
+
+type sessionsPagination struct {
+	Limit   int  `json:"limit"`
+	Offset  int  `json:"offset"`
+	Total   int  `json:"total"`
+	HasMore bool `json:"has_more"`
+}
+
+type sessionsListResponse struct {
+	Items      []agent.SessionSummary `json:"items"`
+	Pagination sessionsPagination     `json:"pagination"`
+}
+
 // handleSessions returns a list of session summaries.
 func (w *WebChannel) handleSessions(rw http.ResponseWriter, r *http.Request) {
-	summaries, err := w.sessions.ListSessions()
+	limit := parseIntQuery(r, "limit", 50)
+	offset := parseIntQuery(r, "offset", 0)
+
+	page, err := w.sessions.ListSessionsPage(limit, offset)
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if summaries == nil {
-		summaries = []agent.SessionSummary{}
+	if page.Items == nil {
+		page.Items = []agent.SessionSummary{}
 	}
 
 	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(summaries)
+	json.NewEncoder(rw).Encode(sessionsListResponse{
+		Items: page.Items,
+		Pagination: sessionsPagination{
+			Limit:   page.Limit,
+			Offset:  page.Offset,
+			Total:   page.Total,
+			HasMore: page.HasMore,
+		},
+	})
 }
 
 // handleSessionDetail returns the full message history for a session.
@@ -637,14 +685,42 @@ func (w *WebChannel) handleSessionDetail(rw http.ResponseWriter, r *http.Request
 		return
 	}
 
-	session, err := w.sessions.Load(id)
+	limit := parseIntQuery(r, "limit", 120)
+	beforeSeq := parseBeforeSeqQuery(r)
+
+	page, err := w.sessions.LoadMessagesPage(id, limit, beforeSeq)
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	type sessionDetailPagination struct {
+		Limit         int    `json:"limit"`
+		Total         int    `json:"total"`
+		HasMore       bool   `json:"has_more"`
+		NextBeforeSeq *int64 `json:"next_before_seq,omitempty"`
+	}
+	type sessionDetailResponse struct {
+		ID         string                  `json:"id"`
+		Messages   []providerPkg.Message   `json:"messages"`
+		Created    time.Time               `json:"created"`
+		Updated    time.Time               `json:"updated"`
+		Pagination sessionDetailPagination `json:"pagination"`
+	}
+
 	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(session)
+	json.NewEncoder(rw).Encode(sessionDetailResponse{
+		ID:       page.ID,
+		Messages: page.Messages,
+		Created:  page.Created,
+		Updated:  page.Updated,
+		Pagination: sessionDetailPagination{
+			Limit:         page.Limit,
+			Total:         page.TotalMessages,
+			HasMore:       page.HasMore,
+			NextBeforeSeq: page.NextBeforeSeq,
+		},
+	})
 }
 
 // handleSkills returns the list of loaded skills.

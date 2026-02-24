@@ -1,6 +1,6 @@
 import type {
   StatusResponse,
-  SessionSummary,
+  SessionsPage,
   Session,
   Skill,
   ChannelConfig,
@@ -41,12 +41,23 @@ export async function getStatus(): Promise<StatusResponse> {
   return request("/api/status");
 }
 
-export async function getSessions(): Promise<SessionSummary[]> {
-  return request("/api/sessions");
+export async function getSessions(params?: { limit?: number; offset?: number }): Promise<SessionsPage> {
+  const query = new URLSearchParams();
+  if (typeof params?.limit === "number") query.set("limit", String(params.limit));
+  if (typeof params?.offset === "number") query.set("offset", String(params.offset));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request(`/api/sessions${suffix}`);
 }
 
-export async function getSession(id: string): Promise<Session> {
-  return request(`/api/sessions/${encodeURIComponent(id)}`);
+export async function getSession(
+  id: string,
+  params?: { limit?: number; beforeSeq?: number }
+): Promise<Session> {
+  const query = new URLSearchParams();
+  if (typeof params?.limit === "number") query.set("limit", String(params.limit));
+  if (typeof params?.beforeSeq === "number") query.set("before_seq", String(params.beforeSeq));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request(`/api/sessions/${encodeURIComponent(id)}${suffix}`);
 }
 
 export async function getSkills(): Promise<Skill[]> {

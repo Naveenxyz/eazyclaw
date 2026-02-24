@@ -16,6 +16,7 @@ export interface Session {
   messages: Message[];
   created: string;
   updated: string;
+  pagination?: SessionDetailPagination;
 }
 
 export interface SessionSummary {
@@ -23,6 +24,25 @@ export interface SessionSummary {
   message_count: number;
   created: string;
   updated: string;
+}
+
+export interface SessionsPagination {
+  limit: number;
+  offset: number;
+  total: number;
+  has_more: boolean;
+}
+
+export interface SessionsPage {
+  items: SessionSummary[];
+  pagination: SessionsPagination;
+}
+
+export interface SessionDetailPagination {
+  limit: number;
+  total: number;
+  has_more: boolean;
+  next_before_seq?: number;
 }
 
 export interface SkillTool {

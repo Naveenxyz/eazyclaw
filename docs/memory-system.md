@@ -56,17 +56,29 @@ Each day's conversation context is written to a dated file:
 These files are:
 - Auto-created by the container entrypoint at startup if they do not exist
 - Append-only during a session — new context is written at the end
-- Included in session context based on `memory.daily_files_in_context` (default: 3 most recent days)
+- Included in session context based on `memory.daily_files_in_context` (default: 2 most recent days)
 
 ## Memory Compaction
 
-When accumulated messages in a session exceed the `compaction.trigger_messages` threshold (default: 40), a compaction flush is triggered:
+Compaction triggers in two ways:
 
-1. The agent writes a summary of the current session context to the day's memory file
-2. The oldest messages are dropped, keeping only the most recent `keep_recent` messages (default: 10)
-3. The compacted summary is prepended to the retained context so continuity is preserved
+1. Message count trigger (`memory.compaction.trigger_messages`, default: 80)
+2. Token headroom trigger (`context_window_tokens - reserve_tokens_floor`)
+
+Before compaction, EazyClaw can run a silent pre-flush turn (`pre_flush_memory_write: true`) to write durable notes into memory files.
+
+During compaction:
+
+1. The agent generates a compaction summary from older messages
+2. A summary marker is written to the day's memory file
+3. Old history is replaced with `[COMPACTION SUMMARY]` + recent messages (`keep_recent_messages`, default: 30)
+4. Session token metadata is reset/re-estimated to avoid stale values
 
 This keeps context window usage bounded during long sessions.
+
+Manual compaction:
+
+- Send `/compact` (optional instructions) in chat to force compaction immediately.
 
 ## Background Digest
 
@@ -84,6 +96,8 @@ Edit `SOUL.md` directly via the **Memory** tab in the web dashboard. Changes tak
 
 ```
 /data/eazyclaw/
+  sessions/
+    sessions.db        # SQLite session store + paginated message history
   memory/
     AGENTS.md
     SOUL.md
@@ -98,3 +112,8 @@ Edit `SOUL.md` directly via the **Memory** tab in the web dashboard. Changes tak
     gh/              # GitHub CLI config (GH_CONFIG_DIR)
   skills/            # Custom skill YAML definitions
 ```
+
+Session persistence note:
+
+- EazyClaw uses SQLite for sessions in this project.
+- No legacy JSON session migration path is included (greenfield setup).

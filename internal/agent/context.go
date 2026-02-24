@@ -37,6 +37,10 @@ type PromptContext struct {
 	ContextWindowTokens      int
 	EstimatedContextTokens   int
 	EstimatedRemainingTokens int
+	SessionTotalInputTokens  int
+	SessionTotalOutputTokens int
+	SessionLastTurnInput     int
+	SessionLastTurnOutput    int
 }
 
 // NewContextBuilder creates a new ContextBuilder.
@@ -335,6 +339,22 @@ func (cb *ContextBuilder) buildRuntimeInfo(sb *strings.Builder, ctx PromptContex
 	}
 	if ctx.EstimatedRemainingTokens > 0 {
 		sb.WriteString(fmt.Sprintf("- Estimated remaining before limit: %d tokens\n", ctx.EstimatedRemainingTokens))
+	}
+	if ctx.SessionTotalInputTokens > 0 || ctx.SessionTotalOutputTokens > 0 {
+		sb.WriteString(fmt.Sprintf(
+			"- Session token totals (model API): input=%d output=%d total=%d\n",
+			ctx.SessionTotalInputTokens,
+			ctx.SessionTotalOutputTokens,
+			ctx.SessionTotalInputTokens+ctx.SessionTotalOutputTokens,
+		))
+	}
+	if ctx.SessionLastTurnInput > 0 || ctx.SessionLastTurnOutput > 0 {
+		sb.WriteString(fmt.Sprintf(
+			"- Last turn token usage: input=%d output=%d total=%d\n",
+			ctx.SessionLastTurnInput,
+			ctx.SessionLastTurnOutput,
+			ctx.SessionLastTurnInput+ctx.SessionLastTurnOutput,
+		))
 	}
 	sb.WriteString("- Token counts are approximate planning hints, not exact tokenizer output\n")
 

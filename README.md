@@ -2,6 +2,17 @@
 
 Self-hosted AI agent gateway that connects LLM providers to messaging platforms (Telegram, Discord, WhatsApp) with a built-in web dashboard, tool execution, persistent memory, and skill system.
 
+## Sessions And Compaction
+
+- Sessions are stored in SQLite (`/data/eazyclaw/sessions/sessions.db`), not JSON files.
+- Web API and dashboard session history use built-in pagination (`limit`/`offset` and keyset `before_seq`).
+- Token telemetry is persisted per session:
+  - `last_prompt_tokens`
+  - cumulative `total_input_tokens` / `total_output_tokens`
+  - per-turn `last_turn_input_tokens` / `last_turn_output_tokens`
+- Auto-compaction uses message thresholds plus token headroom checks, and can run a pre-compaction memory flush.
+- This repository is treated as greenfield: there is no legacy JSON session migration path.
+
 ## Quick Start
 
 ```bash

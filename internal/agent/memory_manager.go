@@ -350,22 +350,28 @@ func (m *MemoryManager) ShouldCompact(msgCount int) bool {
 	return msgCount >= m.opts.CompactionTriggerMsgs
 }
 
-func (m *MemoryManager) ShouldCompactByTokens(estimatedTokens int) bool {
+func (m *MemoryManager) ShouldCompactByTokens(estimatedTokens int, contextWindowTokens int) bool {
 	if !m.CompactionEnabled() {
 		return false
 	}
-	threshold := m.opts.ContextWindowTokens - m.opts.ReserveTokensFloor
+	if contextWindowTokens <= 0 {
+		contextWindowTokens = m.opts.ContextWindowTokens
+	}
+	threshold := contextWindowTokens - m.opts.ReserveTokensFloor
 	if threshold <= 0 {
 		return false
 	}
 	return estimatedTokens >= threshold
 }
 
-func (m *MemoryManager) ShouldFlushBeforeCompaction(estimatedTokens int, session *Session) bool {
+func (m *MemoryManager) ShouldFlushBeforeCompaction(estimatedTokens int, contextWindowTokens int, session *Session) bool {
 	if !m.PreCompactionFlushEnabled() {
 		return false
 	}
-	threshold := m.opts.ContextWindowTokens - m.opts.ReserveTokensFloor - m.opts.SoftThresholdTokens
+	if contextWindowTokens <= 0 {
+		contextWindowTokens = m.opts.ContextWindowTokens
+	}
+	threshold := contextWindowTokens - m.opts.ReserveTokensFloor - m.opts.SoftThresholdTokens
 	if threshold <= 0 || estimatedTokens < threshold {
 		return false
 	}

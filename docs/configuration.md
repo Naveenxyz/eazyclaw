@@ -111,15 +111,31 @@ heartbeat:
 memory:
   enabled: true
   # Maximum characters of memory context injected into each session
-  context_max_chars: 8000
+  context_max_chars: 12000
   # Number of recent daily memory files included in context
-  daily_files_in_context: 3
+  daily_files_in_context: 2
 
   compaction:
-    # Number of accumulated messages that triggers a compaction flush
-    trigger_messages: 40
+    enabled: true
+    # Number of accumulated messages that triggers compaction
+    trigger_messages: 80
     # Number of recent messages to retain after compaction
-    keep_recent: 10
+    keep_recent_messages: 30
+    # Max characters for generated compaction summaries
+    summary_max_chars: 3500
+    # Context window fallback used for token headroom checks
+    context_window_tokens: 200000
+    # Reserved headroom kept before forcing compaction
+    reserve_tokens_floor: 20000
+    # Pre-flush threshold before compaction (context_window - reserve - soft)
+    soft_threshold_tokens: 4000
+    # Run silent pre-compaction memory write turn
+    pre_flush_memory_write: true
+    # Optional per-model context window overrides
+    model_context_windows:
+      k2p5: 200000
+      claude-sonnet-4-6: 200000
+      gpt-4.1: 128000
 
   background:
     # Enable background digest processing
@@ -129,6 +145,10 @@ memory:
     # Maximum number of background digest runs per session
     max_runs: 20
 ```
+
+Notes:
+- Session data is stored in SQLite at `/data/eazyclaw/sessions/sessions.db`.
+- This project is greenfield; no legacy JSON session migration is provided.
 
 ## GitHub CLI Authentication
 
