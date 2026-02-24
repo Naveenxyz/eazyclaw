@@ -1579,8 +1579,27 @@ func channelWhatsAppSnapshot(cfg *config.ChannelsConfig, ch *WhatsAppChannel, st
 		st.DMPolicy = cfg.WhatsApp.DM.Policy
 	}
 	if store != nil {
+		if gp, err := store.Policy("whatsapp", "group_policy"); err == nil && strings.TrimSpace(gp) != "" {
+			st.GroupPolicy = gp
+		}
+		if dp, err := store.Policy("whatsapp", "dm_policy"); err == nil && strings.TrimSpace(dp) != "" {
+			st.DMPolicy = dp
+		}
 		if users, err := store.AllowedUsers("whatsapp"); err == nil && len(users) > 0 {
 			st.AllowedUsers = users
+		}
+		if pending, err := store.PendingApprovals("whatsapp"); err == nil && len(pending) > 0 {
+			st.Pending = make([]WhatsAppPendingApproval, 0, len(pending))
+			for _, p := range pending {
+				st.Pending = append(st.Pending, WhatsAppPendingApproval{
+					UserID:       p.UserID,
+					Username:     p.Username,
+					Preview:      p.Preview,
+					MessageCount: p.MessageCount,
+					FirstSeenAt:  p.FirstSeenAt,
+					LastSeenAt:   p.LastSeenAt,
+				})
+			}
 		}
 	} else if cfg != nil && len(cfg.WhatsApp.AllowedUsers) > 0 {
 		st.AllowedUsers = append([]string{}, cfg.WhatsApp.AllowedUsers...)

@@ -24,7 +24,7 @@ import (
 
 const whatsappMaxMessageLength = 4096
 
-// WhatsAppPendingApproval captures a disallowed DM sender awaiting approval.
+// WhatsAppPendingApproval captures a disallowed sender awaiting approval.
 type WhatsAppPendingApproval struct {
 	UserID       string    `json:"user_id"`
 	Username     string    `json:"username"`
@@ -34,7 +34,7 @@ type WhatsAppPendingApproval struct {
 	LastSeenAt   time.Time `json:"last_seen_at"`
 }
 
-// WhatsAppAdminState is surfaced in the config console for DM approvals.
+// WhatsAppAdminState is surfaced in the config console for approvals.
 type WhatsAppAdminState struct {
 	GroupPolicy  string                    `json:"group_policy"`
 	DMPolicy     string                    `json:"dm_policy"`
@@ -204,15 +204,17 @@ func (w *WhatsAppChannel) handleMessage(evt *events.Message) {
 			slog.Debug("whatsapp: DM denied by policy", "sender_id", senderID)
 			return
 		}
-		if !w.isAllowed(senderJID) {
+		if !w.isDMUserAllowed(senderID) {
 			username := senderJID.User
-			w.recordPendingDM(senderID, username, text, evt.Info.Timestamp)
+			w.recordPendingApproval(senderID, username, text, evt.Info.Timestamp)
 			slog.Warn("whatsapp: DM from disallowed user", "sender_id", senderID)
 			return
 		}
 	} else {
 		if !w.isGroupUserAllowed(senderID) {
-			slog.Warn("whatsapp: message from disallowed user", "sender_id", senderID)
+			username := senderJID.User
+			w.recordPendingApproval(senderID, username, text, evt.Info.Timestamp)
+			slog.Warn("whatsapp: group message from disallowed user", "sender_id", senderID, "chat", evt.Info.Chat.String())
 			return
 		}
 	}
@@ -277,13 +279,24 @@ func (w *WhatsAppChannel) Stop() error {
 	return nil
 }
 
-// isAllowed checks if a sender JID is in the allowlist.
-func (w *WhatsAppChannel) isAllowed(senderJID types.JID) bool {
+func (w *WhatsAppChannel) isDMUserAllowed(senderID string) bool {
 	w.stateMu.RLock()
 	groupPolicy := w.cfg.GroupPolicy
 	w.stateMu.RUnlock()
 
-	ok, _ := w.store.IsAllowed("whatsapp", senderJID.User)
+	return w.isUserAllowedForPolicy(groupPolicy, senderID)
+}
+
+func (w *WhatsAppChannel) isGroupUserAllowed(senderID string) bool {
+	w.stateMu.RLock()
+	groupPolicy := w.cfg.GroupPolicy
+	w.stateMu.RUnlock()
+
+	return w.isUserAllowedForPolicy(groupPolicy, senderID)
+}
+
+func (w *WhatsAppChannel) isUserAllowedForPolicy(groupPolicy, senderID string) bool {
+	ok, _ := w.store.IsAllowed("whatsapp", senderID)
 	if groupPolicy == "allowlist" {
 		return ok
 	}
@@ -294,16 +307,7 @@ func (w *WhatsAppChannel) isAllowed(senderJID types.JID) bool {
 	return len(users) == 0
 }
 
-func (w *WhatsAppChannel) isGroupUserAllowed(senderID string) bool {
-	ok, _ := w.store.IsAllowed("whatsapp", senderID)
-	if ok {
-		return true
-	}
-	users, _ := w.store.AllowedUsers("whatsapp")
-	return len(users) == 0
-}
-
-func (w *WhatsAppChannel) recordPendingDM(userID, username, content string, at time.Time) {
+func (w *WhatsAppChannel) recordPendingApproval(userID, username, content string, at time.Time) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return
